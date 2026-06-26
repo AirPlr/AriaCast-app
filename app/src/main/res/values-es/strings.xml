@@ -9,7 +9,6 @@
     <string name="ok">Aceptar</string>
     <string name="update_failed_title">Error al buscar actualizaciones</string>
     <string name="update_failed_message">No se pudo conectar con GitHub para buscar actualizaciones.</string>
-
     <!-- Main Activity -->
     <string name="media_projection_denied">Permiso de MediaProjection denegado.</string>
     <string name="select_server_first">Por favor, seleccione un servidor primero.</string>
@@ -38,7 +37,6 @@
     <string name="no_servers_found">No se han descubierto servidores</string>
     <string name="grant_notification_permission">Conceder permiso de notificación</string>
     <string name="devices_count_format">%1$d dispositivos</string>
-
     <!-- Settings Activity -->
     <string name="settings">Ajustes</string>
     <string name="general">General</string>
@@ -79,7 +77,6 @@
     <string name="reset_last_server_desc">Borrar detalles guardados de la conexión al servidor</string>
     <string name="plugin_folder">Carpeta de plugins</string>
     <string name="change_plugin_folder_desc">Cambiar o borrar la carpeta de plugins</string>
-
     <!-- Protocols Activity -->
     <string name="protocols">Protocolos</string>
     <string name="protocols_desc">Gestionar protocolos de transmisión compatibles</string>
@@ -91,7 +88,6 @@
     <string name="google_cast_protocol_desc">Transmitir a dispositivos Chromecast y Nest</string>
     <string name="airplay_protocol">AirPlay 1</string>
     <string name="airplay_protocol_desc">Transmitir a altavoces AirPlay compatibles</string>
-
     <!-- Plugins Activity -->
     <string name="plugin_folder_updated">Carpeta de plugins actualizada</string>
     <string name="plugin_folder_title">Carpeta de plugins</string>
@@ -110,7 +106,6 @@
     <string name="plugin_consent_message">Los plugins pueden ejecutar scripts personalizados para interactuar con los medios y los servidores. Instale solo plugins de fuentes confiables.\n\n¿Desea habilitar el sistema de plugins?</string>
     <string name="accept">Aceptar</string>
     <string name="decline">Rechazar</string>
-
     <!-- AudioCastService -->
     <string name="audio_video">Audio y vídeo</string>
     <string name="audio_only">Solo audio</string>
@@ -121,22 +116,50 @@
     <string name="unknown">Desconocido</string>
     <string name="multiroom_group">Grupo Multiroom</string>
     <string name="connecting">Conectando…</string>
-
     <!-- Tile Service -->
     <string name="tile_tap_to_cast">Toca para transmitir</string>
     <string name="tile_discovering">Descubriendo…</string>
     <string name="tile_connecting">Conectando…</string>
     <string name="tile_casting">Transmitiendo…</string>
     <string name="tile_error">Ocurrió un error</string>
-
     <!-- Packet Log Activity -->
     <string name="packet_logs">Registros de paquetes</string>
     <string name="search_logs">Buscar en registros…</string>
-    <string name="clear_logs">Borrar registros</string>
-
+    <string name="clear_logs">Purgar Bitácoras</string>
     <!-- Create Group Dialog -->
     <string name="create_speaker_group">Crear grupo de altavoces</string>
     <string name="group_name">Nombre del grupo</string>
     <string name="select_devices">Seleccionar dispositivos</string>
     <string name="save">Guardar</string>
+    <string name="airplay2_protocol_desc">Flujo para Mac, Apple TV y HomePod</string>
+    <string name="companion_desc">Flujo vía puente Bluetooth ESP32</string>
+    <string name="companion_status_found">Encontrado: %1$s (%2$s)</string>
+    <string name="companion_status_none">Ningún dispositivo encontrado</string>
+    <string name="companion_scan">Analizar</string>
+    <string name="companion_manual_ip">Introduzca IP manualmente</string>
+    <string name="companion_manual_ip_desc">Introduzca directamente la dirección IP ESP32</string>
+    <string name="companion_manual_ip_hint">192.168.1.x</string>
+    <string name="companion_setup">Configuración por primera vez</string>
+    <string name="companion_setup_desc">Conecte su teléfono a la red WiFi AriaCompanion‐XXXX que los broadcasts ESP32, entonces introduzca sus credenciales Wi-Fi de casa a continuación.</string>
+    <string name="companion">AriaCompanion</string>
+    <string name="companion_device">Dispositivo de acompañante</string>
+    <string name="companion_status_searching">Búsqueda para AriaCompanion…</string>
+    <string name="companion_audio_source">Utilice un Origen de Sonido</string>
+    <string name="companion_audio_source_desc">Reproductores de sonido telefónico para ESP32 vía Bluetooth; AriaCast lo reparte desde allí</string>
+    <string name="companion_cleared">Compañero purgado</string>
+    <string name="companion_saved">Compañero guardado: %1$s</string>
+    <string name="companion_ip_saved">IP guardada: %1$s</string>
+    <string name="airplay_pin_title">Introducir PIN AirPlay</string>
+    <string name="airplay_pin_message">Introduzca el código mostrado en la pantalla del dispositivo (%1$s)</string>
+    <string name="manage_airplay_pins">Gestionar los PIN de AirPlay</string>
+    <string name="manage_airplay_pins_desc">Gestión guardada de los PIN de AirPlay para dispositivos emparejados</string>
+    <string name="no_pins_saved">Ningún PIN guardado</string>
+    <string name="companion_wifi_ssid">SSID Wi-Fi Home</string>
+    <string name="companion_wifi_pass">Contraseña Wi-Fi Home</string>
+    <string name="companion_configure">Configurar y Conectar</string>
+    <string name="edit_pin">Editar PIN</string>
+    <string name="delete_pin">Eliminar PIN</string>
+    <string name="airplay2_protocol">AirPlay 2</string>
+    <string name="companion_configure_ok">Credenciales enviadas — ESP32 es está reiniciando</string>
+    <string name="companion_configure_fail">No pudo alcanzar la página de configuración de ESP32</string>
 </resources>
