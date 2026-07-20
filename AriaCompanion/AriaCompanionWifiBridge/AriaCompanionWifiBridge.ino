@@ -207,4 +207,8 @@ void loop() {
             (unsigned)bytesRead, (unsigned)I2S_READ_CHUNK, levelDbfs(buf, bytesRead),
             (tcpClient && tcpClient.connected()) ? " [client connected]" : " [no client]");
     }
+
+    // Without this, a loop() that never blocks for real can spin at 100% CPU
+    // and starve the idle task, tripping the watchdog (reset) and running hot.
+    delay(1);
 }
