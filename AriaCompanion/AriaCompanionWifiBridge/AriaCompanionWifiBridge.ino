@@ -160,6 +160,11 @@ void setup() {
     cfg.pin_bck = PIN_I2S_BCK;
     cfg.pin_ws = PIN_I2S_WS;
     cfg.pin_data = PIN_I2S_DATA;
+    // Bigger than the library default so a brief WiFi stall (tcpClient.write()
+    // blocking for a few ms under congestion) doesn't overflow the DMA buffer
+    // and glitch the audio — trades a bit of latency for tolerance to jitter.
+    cfg.buffer_count = 16;
+    cfg.buffer_size = 1024;
     i2s_in.begin(cfg);
 
     tcpServer.begin();
