@@ -57,12 +57,18 @@ WiFiClient tcpClient;
 // Broadcast our MAC on the handshake UART every 300ms and listen for the
 // peer's. The higher MAC becomes the BT sink. Blinks while searching so an
 // unpaired unit is obvious; goes solid once a role is picked.
+void printMac(const char* label, uint8_t* mac) {
+    Serial.printf("%s %02X:%02X:%02X:%02X:%02X:%02X\n", label, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 Role electRole() {
     HardwareSerial hs(2);
     hs.begin(115200, SERIAL_8N1, PIN_HS_RX, PIN_HS_TX);
 
     uint8_t myMac[6];
     WiFi.macAddress(myMac);
+    printMac("My MAC:", myMac);
+    Serial.println("Waiting for peer on the handshake UART...");
 
     uint8_t peerMac[6];
     bool gotPeer = false;
@@ -92,12 +98,16 @@ Role electRole() {
     }
 
     digitalWrite(PIN_LED, HIGH);
+    printMac("Peer MAC:", peerMac);
 
     for (int i = 0; i < 6; i++) {
         if (myMac[i] != peerMac[i]) {
-            return (myMac[i] > peerMac[i]) ? ROLE_BT_SINK : ROLE_WIFI_BRIDGE;
+            Role r = (myMac[i] > peerMac[i]) ? ROLE_BT_SINK : ROLE_WIFI_BRIDGE;
+            Serial.println(r == ROLE_BT_SINK ? "Role: BT_SINK" : "Role: WIFI_BRIDGE");
+            return r;
         }
     }
+    Serial.println("Role: BT_SINK (identical MAC?! unreachable in practice)");
     return ROLE_BT_SINK; // unreachable: MACs are unique per chip
 }
 
@@ -111,6 +121,7 @@ void setupBtSink() {
     i2s_out.begin(cfg);
 
     a2dp_sink.start(BT_DEVICE_NAME);
+    Serial.println("A2DP sink started, pair with it from your phone's Bluetooth settings.");
 }
 
 // WiFi bridge: read PCM as an I2S slave (clock comes from the BT board over
@@ -119,11 +130,19 @@ void setupBtSink() {
 // AudioCastService.startCompanionAudioCapture(), which just opens a Socket
 // to this IP:port and reads a continuous raw 44.1kHz/16-bit/stereo stream.
 void setupWifiBridge() {
+    Serial.print("Connecting to WiFi");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) delay(200);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(200);
+        Serial.print(".");
+    }
+    Serial.println();
+    Serial.print("WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
 
     MDNS.begin("ariacompanion");
     MDNS.addService("ariacompanion", "tcp", TCP_PORT);
+    Serial.println("mDNS service _ariacompanion._tcp announced, TCP server starting...");
 
     i2s_config_t cfg = {
         .mode = (i2s_mode_t)(I2S_MODE_SLAVE | I2S_MODE_RX),
@@ -150,7 +169,11 @@ void setupWifiBridge() {
 
 void loopWifiBridge() {
     if (!tcpClient || !tcpClient.connected()) {
-        tcpClient = tcpServer.available();
+        WiFiClient newClient = tcpServer.available();
+        if (newClient) {
+            tcpClient = newClient;
+            Serial.println("AriaCast connected.");
+        }
     }
 
     static uint8_t buf[I2S_READ_CHUNK];
@@ -165,6 +188,8 @@ void loopWifiBridge() {
 }
 
 void setup() {
+    Serial.begin(115200);
+    delay(500); // give the USB-serial chip time to enumerate so early prints aren't lost
     pinMode(PIN_LED, OUTPUT);
     WiFi.mode(WIFI_STA); // needed before macAddress() is valid, even on the BT-sink board
 
