@@ -40,6 +40,11 @@ void setup() {
     cfg.pin_bck = PIN_I2S_BCK;
     cfg.pin_ws = PIN_I2S_WS;
     cfg.pin_data = PIN_I2S_DATA;
+    // Bigger than the library default so bursty Bluetooth delivery doesn't
+    // underrun the I2S output and stutter right at the source, before the
+    // WiFi leg is even involved.
+    cfg.buffer_count = 16;
+    cfg.buffer_size = 1024;
     i2s_out.begin(cfg);
 
     a2dp_sink.start(BT_DEVICE_NAME);
@@ -49,4 +54,9 @@ void loop() {
     // Heartbeat blink (1s) just to show the sketch is alive — all the real
     // work happens on ESP32-A2DP's own task in the background.
     digitalWrite(PIN_LED, (millis() / 1000) % 2);
+
+    // Without this, a loop() that never blocks for real spins at 100% CPU,
+    // contending with the A2DP/I2S tasks for CPU time and risking a
+    // watchdog reset — same issue fixed on the WiFi-bridge board.
+    delay(1);
 }

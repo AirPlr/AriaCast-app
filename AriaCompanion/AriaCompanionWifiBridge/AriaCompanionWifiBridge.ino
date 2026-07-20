@@ -83,6 +83,11 @@ void saveCreds(const String& ssid, const String& pass) {
 bool tryConnectWifi(const String& ssid, const String& pass) {
     Serial.print("Connecting to saved WiFi \"" + ssid + "\"");
     WiFi.mode(WIFI_STA);
+    // Modem sleep (WiFi power-save) is on by default and periodically parks
+    // the radio to save power, introducing latency spikes of tens to
+    // hundreds of ms — a classic cause of intermittent stutter in real-time
+    // streaming over ESP32 WiFi. We're USB-powered, so there's no need for it.
+    WiFi.setSleep(false);
     WiFi.begin(ssid.c_str(), pass.c_str());
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
