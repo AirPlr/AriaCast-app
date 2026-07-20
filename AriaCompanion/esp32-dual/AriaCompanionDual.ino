@@ -9,7 +9,8 @@
 //
 // Board: "ESP32 Dev Module" (classic ESP32 — needs Classic BT, so this
 // will NOT work on S3/C3/C6, which dropped BR/EDR).
-// Library needed: "ESP32-A2DP" by pschatzmann (Arduino Library Manager).
+// Libraries needed (Arduino Library Manager): "ESP32-A2DP" by pschatzmann,
+// and its dependency "arduino-audio-tools" by pschatzmann.
 //
 // Wiring between the two boards (same GPIO number on both sides, all on the
 // same header row on a typical 30-pin ESP32 DevKit — check your board's
@@ -25,6 +26,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
+#include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 
 // ---- fill in before flashing ----
@@ -47,7 +49,8 @@
 enum Role { ROLE_BT_SINK, ROLE_WIFI_BRIDGE };
 Role myRole;
 
-BluetoothA2DPSink a2dp_sink;
+I2SStream i2s_out;
+BluetoothA2DPSink a2dp_sink(i2s_out);
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
 
@@ -101,13 +104,12 @@ Role electRole() {
 // BT sink: decode A2DP straight to I2S. ESP32-A2DP runs its own task after
 // start(), so there is nothing left to drive from loop().
 void setupBtSink() {
-    i2s_pin_config_t pins = {
-        .bck_io_num = PIN_I2S_BCK,
-        .ws_io_num = PIN_I2S_WS,
-        .data_out_num = PIN_I2S_DATA,
-        .data_in_num = I2S_PIN_NO_CHANGE
-    };
-    a2dp_sink.set_pin_config(pins);
+    auto cfg = i2s_out.defaultConfig();
+    cfg.pin_bck = PIN_I2S_BCK;
+    cfg.pin_ws = PIN_I2S_WS;
+    cfg.pin_data = PIN_I2S_DATA;
+    i2s_out.begin(cfg);
+
     a2dp_sink.start(BT_DEVICE_NAME);
 }
 
