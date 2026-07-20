@@ -7,10 +7,21 @@
 // AudioCastService.COMPANION_STREAM_PORT / the "_ariacompanion._tcp"
 // mDNS service AriaCompanionActivity scans for).
 //
+// WiFi provisioning mirrors the Pi build: the WiFi-bridge role has no
+// hardcoded credentials. If none are saved in NVS, it starts an AP
+// ("AriaCompanion-XXXX") and a captive-portal-style web server; the
+// AriaCast app's AriaCompanionActivity.sendWifiCredentials() already
+// POSTs ssid/pass to http://192.168.4.1/wifi expecting a 200, so that
+// exact route is what's implemented here. Once saved, the credentials
+// are also forwarded to the peer board over the handshake UART, so
+// whichever physical unit gets elected WiFi bridge after a board swap
+// already has them and can skip AP setup.
+//
 // Board: "ESP32 Dev Module" (classic ESP32 — needs Classic BT, so this
 // will NOT work on S3/C3/C6, which dropped BR/EDR).
 // Libraries needed (Arduino Library Manager): "ESP32-A2DP" by pschatzmann,
-// and its dependency "arduino-audio-tools" by pschatzmann.
+// and its dependency "arduino-audio-tools" by pschatzmann (both provide
+// WebServer/DNSServer/Preferences from the ESP32 core, nothing extra to install).
 //
 // Wiring between the two boards (same GPIO number on both sides, all on the
 // same header row on a typical 30-pin ESP32 DevKit — check your board's
@@ -24,13 +35,13 @@
 // Power: USB -> 5V pin (board A) -> VIN pin (board B), GND common.
 
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <ESPmDNS.h>
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 
-// ---- fill in before flashing ----
-#define WIFI_SSID      "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
 #define BT_DEVICE_NAME "AriaCompanion"
 
 // ---- shared pin map (identical on both boards) ----
@@ -45,6 +56,9 @@
 #define SAMPLE_RATE    44100  // must match what AriaCast expects from a companion (README)
 #define I2S_READ_CHUNK 3528   // 20ms @ 44.1kHz/16-bit/stereo, same granularity AriaCast reads in
 
+#define FRAME_MAC   0xAA
+#define FRAME_CREDS 0xCC
+
 enum Role { ROLE_BT_SINK, ROLE_WIFI_BRIDGE };
 Role myRole;
 
@@ -52,6 +66,81 @@ I2SStream i2s_out;
 BluetoothA2DPSink a2dp_sink(i2s_out);
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
+HardwareSerial hs(2); // handshake link: role election at boot, then ongoing WiFi-credential sync
+
+Preferences prefs;
+String savedSsid, savedPass;
+
+WebServer apServer(80);
+DNSServer dnsServer;
+volatile bool wifiConfigReceived = false;
+
+void loadCreds() {
+    prefs.begin("ariacomp", true);
+    savedSsid = prefs.getString("ssid", "");
+    savedPass = prefs.getString("pass", "");
+    prefs.end();
+}
+
+void saveCreds(const String& ssid, const String& pass) {
+    prefs.begin("ariacomp", false);
+    prefs.putString("ssid", ssid);
+    prefs.putString("pass", pass);
+    prefs.end();
+    savedSsid = ssid;
+    savedPass = pass;
+}
+
+void sendCredsToPeer() {
+    hs.write(FRAME_CREDS);
+    hs.write((uint8_t)savedSsid.length());
+    hs.write((const uint8_t*)savedSsid.c_str(), savedSsid.length());
+    hs.write((uint8_t)savedPass.length());
+    hs.write((const uint8_t*)savedPass.c_str(), savedPass.length());
+}
+
+uint8_t hsReadBlocking() {
+    while (!hs.available()) delay(1);
+    return hs.read();
+}
+
+String hsReadStringBlocking(uint8_t len) {
+    String s;
+    for (uint8_t i = 0; i < len; i++) s += (char)hsReadBlocking();
+    return s;
+}
+
+// Non-blocking except for the few bytes right after a real FRAME_CREDS
+// marker, which arrive back-to-back within milliseconds of each other.
+// Called continuously from loop() (both roles) so a WiFi bridge that
+// learns new credentials later (via AP setup) can still push them to
+// an already-running BT-sink peer.
+void checkForCredentialSync() {
+    if (!hs.available()) return;
+    uint8_t marker = hs.read();
+    if (marker != FRAME_CREDS) return; // stray byte (e.g. late MAC frame) — ignore
+
+    uint8_t ssidLen = hsReadBlocking();
+    String ssid = hsReadStringBlocking(ssidLen);
+    uint8_t passLen = hsReadBlocking();
+    String pass = hsReadStringBlocking(passLen);
+
+    if (ssidLen > 0 && ssid != savedSsid) {
+        Serial.println("Received WiFi credentials from peer, saving for next time I'm elected WiFi bridge.");
+        saveCreds(ssid, pass);
+    }
+}
+
+// Right after role election, give both boards a chance to converge on
+// whichever WiFi credentials either of them already knows — important
+// after swapping one unit for a blank replacement.
+void syncCredsWithPeer() {
+    sendCredsToPeer();
+    uint32_t start = millis();
+    while (millis() - start < 1000) {
+        checkForCredentialSync();
+    }
+}
 
 // Broadcast our MAC on the handshake UART every 300ms and listen for the
 // peer's. The higher MAC becomes the BT sink. Blinks while searching so an
@@ -61,9 +150,6 @@ void printMac(const char* label, uint8_t* mac) {
 }
 
 Role electRole() {
-    HardwareSerial hs(2);
-    hs.begin(115200, SERIAL_8N1, PIN_HS_RX, PIN_HS_TX);
-
     uint8_t myMac[6];
     WiFi.macAddress(myMac);
     printMac("My MAC:", myMac);
@@ -79,14 +165,14 @@ Role electRole() {
         digitalWrite(PIN_LED, (millis() / 250) % 2);
 
         if (millis() - lastSend > 300) {
-            hs.write(0xAA);        // frame marker so a partial byte can't be misread as a MAC
+            hs.write(FRAME_MAC);   // frame marker so a partial byte can't be misread as a MAC
             hs.write(myMac, 6);
             lastSend = millis();
         }
 
         while (hs.available()) {
             uint8_t b = hs.read();
-            if (rxLen == 0 && b != 0xAA) continue;
+            if (rxLen == 0 && b != FRAME_MAC) continue;
             rxBuf[rxLen++] = b;
             if (rxLen == 7) {
                 memcpy(peerMac, rxBuf + 1, 6);
@@ -123,19 +209,73 @@ void setupBtSink() {
     Serial.println("A2DP sink started, pair with it from your phone's Bluetooth settings.");
 }
 
+bool tryConnectWifi(const String& ssid, const String& pass) {
+    Serial.print("Connecting to saved WiFi \"" + ssid + "\"");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+        delay(300);
+        Serial.print(".");
+    }
+    Serial.println();
+    return WiFi.status() == WL_CONNECTED;
+}
+
+// AP + captive-portal-style setup, mirroring the Pi build. The AriaCast app's
+// AriaCompanionActivity.sendWifiCredentials() already POSTs ssid/pass to
+// http://192.168.4.1/wifi (the ESP32 default softAP IP) expecting a 200, so
+// that's the exact route implemented here — no app-side changes needed.
+void runApSetupPortal() {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char apName[32];
+    snprintf(apName, sizeof(apName), "AriaCompanion-%02X%02X", mac[4], mac[5]);
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apName);
+    Serial.print("No saved WiFi credentials. AP setup mode: connect to \"");
+    Serial.print(apName);
+    Serial.println("\", then use AriaCast's AriaCompanion screen to configure.");
+
+    dnsServer.start(53, "*", WiFi.softAPIP());
+
+    apServer.on("/wifi", HTTP_POST, []() {
+        String ssid = apServer.arg("ssid");
+        String pass = apServer.arg("pass");
+        if (ssid.length() == 0) {
+            apServer.send(400, "text/plain", "missing ssid");
+            return;
+        }
+        saveCreds(ssid, pass);
+        sendCredsToPeer();
+        apServer.send(200, "text/plain", "OK");
+        wifiConfigReceived = true;
+    });
+    apServer.onNotFound([]() {
+        apServer.sendHeader("Location", "http://192.168.4.1/", true);
+        apServer.send(302, "text/plain", "");
+    });
+    apServer.begin();
+
+    while (!wifiConfigReceived) {
+        dnsServer.processNextRequest();
+        apServer.handleClient();
+    }
+    Serial.println("Credentials saved, rebooting to connect...");
+    delay(500);
+    ESP.restart();
+}
+
 // WiFi bridge: read PCM as an I2S slave (clock comes from the BT board over
 // the shared wires) and forward it raw to whichever client connects.
 // AriaCast is the one that connects out to us — see
 // AudioCastService.startCompanionAudioCapture(), which just opens a Socket
 // to this IP:port and reads a continuous raw 44.1kHz/16-bit/stereo stream.
 void setupWifiBridge() {
-    Serial.print("Connecting to WiFi");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(200);
-        Serial.print(".");
+    if (savedSsid.length() == 0 || !tryConnectWifi(savedSsid, savedPass)) {
+        runApSetupPortal(); // blocks until credentials arrive, then restarts
     }
-    Serial.println();
     Serial.print("WiFi connected, IP: ");
     Serial.println(WiFi.localIP());
 
@@ -185,7 +325,11 @@ void setup() {
     pinMode(PIN_LED, OUTPUT);
     WiFi.mode(WIFI_STA); // needed before macAddress() is valid, even on the BT-sink board
 
+    hs.begin(115200, SERIAL_8N1, PIN_HS_RX, PIN_HS_TX);
+    loadCreds();
+
     myRole = electRole();
+    syncCredsWithPeer(); // pick up saved WiFi creds from the peer if we don't have our own
 
     if (myRole == ROLE_BT_SINK) {
         setupBtSink();
@@ -195,8 +339,9 @@ void setup() {
 }
 
 void loop() {
+    checkForCredentialSync(); // keep listening even after boot, e.g. peer just ran AP setup
     if (myRole == ROLE_WIFI_BRIDGE) {
         loopWifiBridge();
     }
-    // ROLE_BT_SINK: nothing to do here, ESP32-A2DP streams from its own task.
+    // ROLE_BT_SINK: nothing else to do here, ESP32-A2DP streams from its own task.
 }
