@@ -19,6 +19,9 @@
 // work fine here too). Pins below are tuned for a YD-ESP32-S3 (ESP32-S3-
 // DevKitC-1 clone, N8R2 — quad PSRAM, so GPIO33-37 are free too); adjust if
 // you're on a different module/variant.
+// Requires PSRAM enabled in the Arduino IDE board menu (Tools > PSRAM >
+// "QSPI PSRAM" for a quad-PSRAM board like the N8R2) — the ~1s jitter
+// buffer below is allocated there.
 // No extra libraries needed — uses ESP-IDF's built-in driver/i2s.h and the
 // ESP32 core's WiFi/WebServer/DNSServer/Preferences/ESPmDNS directly. This
 // board runs standalone (never shares a binary with the BT-sink board's
@@ -43,6 +46,7 @@
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
 #include <Adafruit_NeoPixel.h>
+#include <esp_heap_caps.h>
 
 #define PIN_I2S_BCK  4
 #define PIN_I2S_WS   5
@@ -63,6 +67,18 @@ void setStatusLed(bool on) {
 #define I2S_READ_CHUNK 3528   // 20ms @ 44.1kHz/16-bit/stereo, same granularity AriaCast reads in
 #define I2S_DMA_BUF_COUNT 16
 #define I2S_DMA_BUF_LEN   256  // frames (stereo samples) per buffer; 256*4 bytes = 1024 bytes/buffer
+
+// A ~1s jitter buffer between the I2S read and the TCP write, like a "real"
+// network receiver would use — decouples the two completely, so a WiFi
+// stall of up to ~1s gets absorbed instead of glitching audio. Lives in
+// PSRAM (requires PSRAM enabled in the Arduino IDE board menu) since ~172KB
+// is a lot to ask of internal SRAM alongside the WiFi stack.
+#define JITTER_BUFFER_BYTES (SAMPLE_RATE * 2 /*ch*/ * 2 /*bytes/sample*/) // ~1 second
+uint8_t* jitterBuf = nullptr;
+size_t jitterHead = 0;   // next write position
+size_t jitterTail = 0;   // next read position
+size_t jitterFill = 0;   // bytes currently buffered
+bool jitterPrimed = false; // true once we've filled a full second at least once
 
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
@@ -161,6 +177,11 @@ void setup() {
     rgbLed.begin();
     setStatusLed(false);
 
+    jitterBuf = (uint8_t*)heap_caps_malloc(JITTER_BUFFER_BYTES, MALLOC_CAP_SPIRAM);
+    if (jitterBuf == nullptr) {
+        Serial.println("PSRAM allocation failed for jitter buffer — is PSRAM enabled in Tools > PSRAM?");
+    }
+
     loadCreds();
     if (savedSsid.length() == 0 || !tryConnectWifi(savedSsid, savedPass)) {
         runApSetupPortal(); // blocks until credentials arrive, then restarts
@@ -218,10 +239,40 @@ void loop() {
     size_t bytesRead = 0;
     i2s_read(I2S_NUM_0, buf, I2S_READ_CHUNK, &bytesRead, portMAX_DELAY);
 
-    // Drop samples when nobody's connected instead of blocking the I2S read
-    // loop — keeps the DMA buffers from backing up while AriaCast isn't casting.
-    if (tcpClient && tcpClient.connected() && bytesRead > 0) {
-        tcpClient.write(buf, bytesRead);
+    if (jitterBuf == nullptr) {
+        // PSRAM wasn't available — fall back to direct passthrough rather than crash.
+        if (tcpClient && tcpClient.connected() && bytesRead > 0) {
+            tcpClient.write(buf, bytesRead);
+        }
+    } else {
+        // Push into the ring buffer, overwriting the oldest bytes if it's
+        // completely full (shouldn't happen once primed, since drain rate
+        // tracks fill rate — this is just a safety net).
+        for (size_t i = 0; i < bytesRead; i++) {
+            jitterBuf[jitterHead] = buf[i];
+            jitterHead = (jitterHead + 1) % JITTER_BUFFER_BYTES;
+            if (jitterFill < JITTER_BUFFER_BYTES) {
+                jitterFill++;
+            } else {
+                jitterTail = (jitterTail + 1) % JITTER_BUFFER_BYTES;
+            }
+        }
+
+        if (!jitterPrimed && jitterFill >= JITTER_BUFFER_BYTES) {
+            jitterPrimed = true;
+            Serial.println("Jitter buffer primed (~1s), starting playback drain.");
+        }
+
+        if (jitterPrimed && tcpClient && tcpClient.connected() && jitterFill > 0) {
+            static uint8_t sendBuf[I2S_READ_CHUNK];
+            size_t toSend = min(jitterFill, (size_t)I2S_READ_CHUNK);
+            for (size_t i = 0; i < toSend; i++) {
+                sendBuf[i] = jitterBuf[jitterTail];
+                jitterTail = (jitterTail + 1) % JITTER_BUFFER_BYTES;
+            }
+            jitterFill -= toSend;
+            tcpClient.write(sendBuf, toSend);
+        }
     }
 
     // Without this, a loop() that never blocks for real can spin at 100% CPU

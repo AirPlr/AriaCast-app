@@ -42,8 +42,13 @@ void setup() {
     cfg.pin_data = PIN_I2S_DATA;
     // Bigger than the library default so bursty Bluetooth delivery doesn't
     // underrun the I2S output and stutter right at the source, before the
-    // WiFi leg is even involved.
-    cfg.buffer_count = 16;
+    // WiFi leg is even involved. Kept well under classic ESP32's I2S DMA
+    // descriptor limit (unlike the WiFi bridge, this isn't a full ~1s
+    // jitter buffer — there's no real "network hop" on this side to
+    // protect against, Bluetooth delivery is comparatively steady, and a
+    // custom ring buffer here would mean intercepting ESP32-A2DP's internal
+    // callbacks, which isn't worth the added fragility).
+    cfg.buffer_count = 64;
     cfg.buffer_size = 1024;
     i2s_out.begin(cfg);
 
