@@ -16,19 +16,22 @@
 // setup once on the replacement.
 //
 // Board: any ESP32 (this role needs WiFi only, no Classic BT, so S3/C3/C6
-// work fine here too).
+// work fine here too). Pins below are tuned for a YD-ESP32-S3 (ESP32-S3-
+// DevKitC-1 clone, N8R2 — quad PSRAM, so GPIO33-37 are free too); adjust if
+// you're on a different module/variant.
 // Library needed (Arduino Library Manager): "arduino-audio-tools" by
 // pschatzmann (for I2SStream — same driver family the BT-sink board's
 // ESP32-A2DP library uses internally, so the two never fight over the I2S
 // peripheral even though they're now separate binaries).
 //
-// Wiring to the BT-sink board (same GPIO number on both sides, all on the
-// same header row on a typical 30-pin ESP32 DevKit — check your board's
-// silkscreen, layouts vary between DevKitC/NodeMCU-32S/DOIT clones):
-//   GPIO18 <-> GPIO18   I2S BCK
-//   GPIO19 <-> GPIO19   I2S WS
-//   GPIO23 <-> GPIO23   I2S DATA (BT-sink board drives it, this board reads it)
-//   GND    <-> GND
+// Wiring to the BT-sink board — GPIO numbers differ per side since the two
+// boards are different chips (classic ESP32 vs S3), just match signal to
+// signal, not GPIO number to GPIO number:
+//   This board (S3)      BT-sink board (classic ESP32)
+//   GPIO4  (I2S BCK)  <-> GPIO18
+//   GPIO5  (I2S WS)   <-> GPIO19
+//   GPIO6  (I2S DATA) <-> GPIO23   (BT-sink board drives it, this board reads it)
+//   GND               <-> GND
 // Power each board separately (USB each, or bridge 5V-to-VIN — not 3.3V-to-3.3V).
 
 #include <WiFi.h>
@@ -39,10 +42,10 @@
 #include <math.h>
 #include "AudioTools.h"
 
-#define PIN_I2S_BCK  18
-#define PIN_I2S_WS   19
-#define PIN_I2S_DATA 23
-#define PIN_LED      2
+#define PIN_I2S_BCK  4
+#define PIN_I2S_WS   5
+#define PIN_I2S_DATA 6
+#define PIN_LED      7
 
 #define TCP_PORT       7001   // must match AudioCastService.COMPANION_STREAM_PORT
 #define SAMPLE_RATE    44100  // must match what AriaCast expects from a companion (README)
