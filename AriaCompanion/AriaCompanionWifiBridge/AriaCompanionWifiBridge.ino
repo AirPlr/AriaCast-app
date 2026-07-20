@@ -47,11 +47,16 @@
 #define PIN_I2S_BCK  4
 #define PIN_I2S_WS   5
 #define PIN_I2S_DATA 6
-#define PIN_LED      7
-#define PIN_RGB_LED  48 // onboard WS2812 on this board — needs an explicit "off" frame,
-                         // unlike a plain LED it doesn't default off when left untouched
+#define PIN_RGB_LED  48 // onboard WS2812 on this board, used as the status LED
+#define STATUS_LED_BRIGHTNESS 38 // ~15% of 255 — full brightness is blinding at night
 
 Adafruit_NeoPixel rgbLed(1, PIN_RGB_LED, NEO_GRB + NEO_KHZ800);
+
+void setStatusLed(bool on) {
+    uint8_t v = on ? STATUS_LED_BRIGHTNESS : 0;
+    rgbLed.setPixelColor(0, rgbLed.Color(v, v, v));
+    rgbLed.show();
+}
 
 #define TCP_PORT       7001   // must match AudioCastService.COMPANION_STREAM_PORT
 #define SAMPLE_RATE    44100  // must match what AriaCast expects from a companion (README)
@@ -98,7 +103,7 @@ bool tryConnectWifi(const String& ssid, const String& pass) {
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
         delay(300);
         Serial.print(".");
-        digitalWrite(PIN_LED, (millis() / 150) % 2); // fast blink while connecting
+        setStatusLed((millis() / 150) % 2); // fast blink while connecting
     }
     Serial.println();
     return WiFi.status() == WL_CONNECTED;
@@ -142,7 +147,7 @@ void runApSetupPortal() {
     while (!wifiConfigReceived) {
         dnsServer.processNextRequest();
         apServer.handleClient();
-        digitalWrite(PIN_LED, (millis() / 500) % 2); // slow blink while waiting for setup
+        setStatusLed((millis() / 500) % 2); // slow blink while waiting for setup
     }
     Serial.println("Credentials saved, rebooting to connect...");
     delay(500);
@@ -152,10 +157,9 @@ void runApSetupPortal() {
 void setup() {
     Serial.begin(115200);
     delay(500); // give the USB-serial chip time to enumerate so early prints aren't lost
-    pinMode(PIN_LED, OUTPUT);
 
     rgbLed.begin();
-    rgbLed.show(); // sends an all-zero frame — turns the onboard RGB LED off
+    setStatusLed(false);
 
     loadCreds();
     if (savedSsid.length() == 0 || !tryConnectWifi(savedSsid, savedPass)) {
@@ -164,7 +168,7 @@ void setup() {
 
     Serial.print("WiFi connected, IP: ");
     Serial.println(WiFi.localIP());
-    digitalWrite(PIN_LED, HIGH); // solid: connected and about to start serving
+    setStatusLed(true); // solid: connected and about to start serving
 
     MDNS.begin("ariacompanion");
     MDNS.addService("ariacompanion", "tcp", TCP_PORT);
