@@ -182,6 +182,10 @@ void loop() {
     if (!tcpClient || !tcpClient.connected()) {
         WiFiClient newClient = tcpServer.available();
         if (newClient) {
+            // Without this, Nagle's algorithm can coalesce/delay our small
+            // 20ms writes waiting for ACKs, building up latency that keeps
+            // growing instead of settling — exactly a creeping/never-catches-up lag.
+            newClient.setNoDelay(true);
             tcpClient = newClient;
             Serial.println("AriaCast connected.");
         }
