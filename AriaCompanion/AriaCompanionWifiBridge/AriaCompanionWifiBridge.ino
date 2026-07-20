@@ -39,7 +39,6 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
-#include <math.h>
 #include "AudioTools.h"
 
 #define PIN_I2S_BCK  4
@@ -174,19 +173,6 @@ void setup() {
     tcpServer.begin();
 }
 
-// RMS level of the 16-bit stereo samples in buf, in dBFS (0 = full scale,
-// more negative = quieter, -100 as a floor for near-silence).
-float levelDbfs(uint8_t* buf, size_t byteLen) {
-    int16_t* samples = (int16_t*)buf;
-    size_t n = byteLen / 2;
-    if (n == 0) return -100.0;
-    double sumSquares = 0;
-    for (size_t i = 0; i < n; i++) sumSquares += (double)samples[i] * samples[i];
-    double rms = sqrt(sumSquares / n);
-    if (rms < 1) return -100.0;
-    return 20.0 * log10(rms / 32768.0);
-}
-
 void loop() {
     if (!tcpClient || !tcpClient.connected()) {
         WiFiClient newClient = tcpServer.available();
@@ -207,14 +193,6 @@ void loop() {
     // loop — keeps the DMA buffers from backing up while AriaCast isn't casting.
     if (tcpClient && tcpClient.connected() && bytesRead > 0) {
         tcpClient.write(buf, bytesRead);
-    }
-
-    static uint32_t lastLog = 0;
-    if (millis() - lastLog > 1000) {
-        lastLog = millis();
-        Serial.printf("I2S read: %u/%u bytes, level: %.1f dBFS, WiFi RSSI: %d dBm%s\n",
-            (unsigned)bytesRead, (unsigned)I2S_READ_CHUNK, levelDbfs(buf, bytesRead), WiFi.RSSI(),
-            (tcpClient && tcpClient.connected()) ? " [client connected]" : " [no client]");
     }
 
     // Without this, a loop() that never blocks for real can spin at 100% CPU

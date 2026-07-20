@@ -34,8 +34,6 @@ I2SStream i2s_out;
 BluetoothA2DPSink a2dp_sink(i2s_out);
 
 void setup() {
-    Serial.begin(115200);
-    delay(500); // give the USB-serial chip time to enumerate so early prints aren't lost
     pinMode(PIN_LED, OUTPUT);
 
     auto cfg = i2s_out.defaultConfig();
@@ -45,7 +43,6 @@ void setup() {
     i2s_out.begin(cfg);
 
     a2dp_sink.start(BT_DEVICE_NAME);
-    Serial.println("A2DP sink started as \"" BT_DEVICE_NAME "\" — pair with it from your phone's Bluetooth settings.");
 }
 
 void loop() {
