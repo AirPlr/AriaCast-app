@@ -25,7 +25,6 @@
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
-#include <driver/i2s.h>
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 
@@ -144,25 +143,19 @@ void setupWifiBridge() {
     MDNS.addService("ariacompanion", "tcp", TCP_PORT);
     Serial.println("mDNS service _ariacompanion._tcp announced, TCP server starting...");
 
-    i2s_config_t cfg = {
-        .mode = (i2s_mode_t)(I2S_MODE_SLAVE | I2S_MODE_RX),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
-        .dma_buf_len = 256
-    };
-    i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
-
-    i2s_pin_config_t pins = {
-        .bck_io_num = PIN_I2S_BCK,
-        .ws_io_num = PIN_I2S_WS,
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = PIN_I2S_DATA
-    };
-    i2s_set_pin(I2S_NUM_0, &pins);
+    // Uses the same I2SStream (new IDF I2S driver) as the BT-sink role — mixing
+    // this with the legacy driver/i2s.h API in the same binary aborts at boot
+    // with "CONFLICT! The new i2s driver can't work along with the legacy i2s driver",
+    // even though only one role's I2S code path actually runs per board.
+    auto cfg = i2s_out.defaultConfig(RX_MODE);
+    cfg.is_master = false; // clock/WS come from the BT-sink board over the shared wires
+    cfg.sample_rate = SAMPLE_RATE;
+    cfg.bits_per_sample = 16;
+    cfg.channels = 2;
+    cfg.pin_bck = PIN_I2S_BCK;
+    cfg.pin_ws = PIN_I2S_WS;
+    cfg.pin_data = PIN_I2S_DATA;
+    i2s_out.begin(cfg);
 
     tcpServer.begin();
 }
@@ -177,8 +170,7 @@ void loopWifiBridge() {
     }
 
     static uint8_t buf[I2S_READ_CHUNK];
-    size_t bytesRead = 0;
-    i2s_read(I2S_NUM_0, buf, I2S_READ_CHUNK, &bytesRead, portMAX_DELAY);
+    size_t bytesRead = i2s_out.readBytes(buf, I2S_READ_CHUNK);
 
     // Drop samples when nobody's connected instead of blocking the I2S read
     // loop — keeps the DMA buffers from backing up while AriaCast isn't casting.
