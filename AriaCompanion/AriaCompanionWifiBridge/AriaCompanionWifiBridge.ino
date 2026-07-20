@@ -42,11 +42,16 @@
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
+#include <Adafruit_NeoPixel.h>
 
 #define PIN_I2S_BCK  4
 #define PIN_I2S_WS   5
 #define PIN_I2S_DATA 6
 #define PIN_LED      7
+#define PIN_RGB_LED  48 // onboard WS2812 on this board — needs an explicit "off" frame,
+                         // unlike a plain LED it doesn't default off when left untouched
+
+Adafruit_NeoPixel rgbLed(1, PIN_RGB_LED, NEO_GRB + NEO_KHZ800);
 
 #define TCP_PORT       7001   // must match AudioCastService.COMPANION_STREAM_PORT
 #define SAMPLE_RATE    44100  // must match what AriaCast expects from a companion (README)
@@ -148,6 +153,9 @@ void setup() {
     Serial.begin(115200);
     delay(500); // give the USB-serial chip time to enumerate so early prints aren't lost
     pinMode(PIN_LED, OUTPUT);
+
+    rgbLed.begin();
+    rgbLed.show(); // sends an all-zero frame — turns the onboard RGB LED off
 
     loadCreds();
     if (savedSsid.length() == 0 || !tryConnectWifi(savedSsid, savedPass)) {
