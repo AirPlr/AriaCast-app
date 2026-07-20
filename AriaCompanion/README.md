@@ -14,115 +14,111 @@ AriaCast level.
 AriaCompanion solves this by moving audio capture off the phone entirely:
 
 ```
-Phone Bluetooth → AriaCompanion (Pi/ESP32) → TCP → AriaCast → Cast destination
+Phone Bluetooth → ESP32 (BT sink) → I2S → ESP32 (WiFi bridge) → TCP → AriaCast → Cast destination
 ```
 
-Your phone plays audio to AriaCompanion as a Bluetooth A2DP sink. AriaCompanion
-streams the raw PCM back to AriaCast over your local network. AriaCast then
-forwards it to any cast target (AirPlay, RAOP, AriaCast Receiver, etc.) exactly
-as it would with captured system audio.
+Your phone plays audio to AriaCompanion as a Bluetooth A2DP sink. One ESP32
+decodes it and hands the raw PCM to a second ESP32 over I2S, which streams it
+to AriaCast over your local network. AriaCast then forwards it to any cast
+target (AirPlay, RAOP, AriaCast Receiver, etc.) exactly as it would with
+captured system audio.
 
 ---
 
 ## Hardware
 
-| Device | SoC | Arch | Notes |
-|--------|-----|------|-------|
-| **Raspberry Pi Zero 2W** *(recommended)* | BCM2710 / Cortex-A53 | ARMv8 64-bit | Handles BT+WiFi coexistence well; quad-core headroom |
-| Raspberry Pi Zero W | BCM2835 / ARM1176 | ARMv6 32-bit | Works; single-core, tighter margins |
-| ESP32 | Xtensa LX6 | — | Firmware in `AriaCompanion.ino`; BT+WiFi radio contention can cause instability |
+Two ESP32 boards, wired together over I2S — splitting Bluetooth and WiFi
+across two chips avoids the radio contention a single ESP32 hits trying to do
+both at once.
 
-You also need a **microSD card** (2 GB minimum; 8 GB recommended for writes headroom).
+| Role | Board | Notes |
+|------|-------|-------|
+| **BT sink** | Any classic ESP32 (WROOM/WROVER) | Must support **Classic Bluetooth (BR/EDR)** — S3/C3/C6 do **not** work here, they dropped it in favor of BLE-only |
+| **WiFi bridge** | Any ESP32 — classic, S3, C3, C6 | Only needs WiFi, no Bluetooth, so newer chips are fine (tested on a YD-ESP32-S3 N8R2 clone) |
+
+No SD card, no separate power supply required beyond USB — each board can be
+powered from its own USB port, or you can bridge one board's **5V** pin to the
+other's **VIN** pin to share a single supply (never bridge 3.3V-to-3.3V — see
+Troubleshooting).
 
 ---
 
-## Building the firmware image
+## Firmware
 
-### Prerequisites
+Two Arduino sketches, one per board:
 
-Install these once on your build machine (Debian / Ubuntu):
+| Sketch | Role |
+|--------|------|
+| `AriaCompanionBtSink/AriaCompanionBtSink.ino` | Always the Bluetooth A2DP sink |
+| `AriaCompanionWifiBridge/AriaCompanionWifiBridge.ino` | Always the WiFi/TCP bridge |
 
-```bash
-sudo apt-get install -y \
-    build-essential git wget cpio rsync bc unzip file \
-    libssl-dev libelf-dev python3
-```
+### Libraries (Arduino Library Manager)
 
-The build script downloads Buildroot automatically. First build takes **1–2 hours**
-and ~5 GB of disk space (toolchain + kernel + packages). Subsequent incremental
-builds are much faster.
+- **BT sink board:** `ESP32-A2DP` (pschatzmann) and its dependency
+  `arduino-audio-tools` (pschatzmann).
+- **WiFi bridge board:** none — it uses ESP-IDF's built-in `driver/i2s.h` and
+  the ESP32 core's WiFi/WebServer/DNSServer/Preferences/ESPmDNS directly.
 
-### Build
+### Wiring between the two boards
 
-```bash
-cd AriaCompanion/buildroot
+Match signal to signal — the GPIO numbers only need to match each other if
+both boards are the same chip family; see the pin tables at the top of each
+`.ino` file for the exact GPIOs on your specific board/variant:
 
-# Raspberry Pi Zero 2W (ARMv8, 64-bit) — recommended
-./build.sh pizero2w
+| Signal | BT sink | WiFi bridge |
+|--------|---------|-------------|
+| I2S BCK | drives it | reads it |
+| I2S WS | drives it | reads it |
+| I2S DATA | drives it | reads it |
+| GND | common | common |
 
-# Raspberry Pi Zero W (ARMv6, 32-bit)
-./build.sh pizerow
+The WiFi bridge is the I2S slave (`is_master = false`) — clock and word-select
+come from the BT sink board over these wires, so get GND common right first;
+a missing/loose ground reference is a common cause of garbled or missing
+audio that looks like a completely different bug.
 
-# Build both
-./build.sh both
-```
-
-Output image: `output-<target>/images/sdcard.img` (~320 MB)
-
-### Flash to SD card
-
-```bash
-# Replace /dev/sdX with your SD card device (check with lsblk first!)
-sudo dd if=output-pizero2w/images/sdcard.img of=/dev/sdX bs=4M status=progress
-sync
-```
-
-Or use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) →
-*Use custom image* and select the `.img` file.
+Open each sketch in the Arduino IDE, select the right board (classic
+"ESP32 Dev Module" for the BT sink, your specific S3/etc. for the WiFi
+bridge), flash, and power both up.
 
 ---
 
 ## First-time setup
 
-### 1. Boot the Pi
+### 1. Power on both boards
 
-Insert the SD card and power the Pi. On first boot it has no WiFi credentials,
-so it automatically starts in **setup mode**:
+The BT sink board starts advertising Bluetooth immediately. The WiFi bridge
+board checks for saved WiFi credentials; on first boot it has none, so it
+starts an access point instead:
 
-- Creates a WiFi access point named **`AriaCompanion-XXXX`** (last 4 hex chars
-  of the MAC address)
-- IP address: `192.168.4.1`
+- Creates a WiFi access point named **`AriaCompanion-XXXX`** (last 4 hex
+  chars of its MAC address)
+- IP address: `192.168.4.1` (ESP32 default softAP IP)
 
 ### 2. Connect your phone to the AP
 
-Go to your phone's WiFi settings and join **`AriaCompanion-XXXX`**.
-There is no password.
-
-Your phone will detect a captive portal and open a browser automatically
-(Android shows a notification; iOS redirects Safari). If it doesn't open
-automatically, navigate to **`http://192.168.4.1`** manually.
+Join **`AriaCompanion-XXXX`** from your phone's WiFi settings. There is no
+password. Android may warn the network has no internet — that's expected,
+ignore it and stay connected.
 
 ### 3. Enter your home WiFi credentials
 
-Fill in your home network SSID and password, then tap **Connect & Reboot**.
-
-The Pi saves the credentials and reboots. After ~30 seconds it will be on
-your home network.
+Open AriaCast → **Settings** → **AriaCompanion**, fill in your home network's
+SSID and password, and tap **Configure**. The app POSTs directly to
+`http://192.168.4.1/wifi` — no browser/captive portal page needed. The WiFi
+bridge board saves the credentials to flash and reboots onto your home
+network.
 
 ### 4. Pair Bluetooth
 
-On your phone, open **Bluetooth settings** and scan for new devices.
-Select **AriaCompanion**. No PIN is required — the device auto-accepts all
-pairing requests.
-
-> **Tip:** You only need to pair once. After that the Pi auto-reconnects
-> whenever it's powered on and your phone is in range.
+On your phone, open **Bluetooth settings** and scan for new devices. Select
+**AriaCompanion**. No PIN is required.
 
 ### 5. Enable in AriaCast
 
 1. Open AriaCast → **Settings** → **AriaCompanion**
 2. Tap **Scan** — the device appears automatically via mDNS
-   (or enter `192.168.4.1` manually if mDNS doesn't work on your router)
+   (or enter its IP manually if mDNS doesn't work on your router)
 3. Enable **Use as Audio Source**
 
 From now on, when you tap Cast in AriaCast, it will:
@@ -133,109 +129,24 @@ From now on, when you tap Cast in AriaCast, it will:
 
 ## Daily use
 
-1. Power on the Pi (or leave it always on)
+1. Power on both boards (or leave them always on)
 2. Set your phone's **audio output to AriaCompanion** via Bluetooth
 3. Play audio in any app — even ones blocked by AudioHardening
 4. Tap **Cast** in AriaCast as normal
 
-The Bluetooth volume on your phone controls the level. Keep it at 100% for
-best quality; adjust volume on the cast destination instead.
-
----
-
-## OTA updates
-
-You can update the `aria-companion` streaming binary without rebuilding the
-whole image or SSH-ing into the device.
-
-### Build the updated binary
-
-```bash
-cd AriaCompanion/buildroot
-
-# Rebuild (uses cached toolchain — much faster than first build)
-./build.sh pizero2w   # or pizerow
-
-# The updated binary is at:
-#   output-pizero2w/target/usr/bin/aria-companion
-```
-
-### Upload via the web interface
-
-1. Make sure AriaCompanion is in **normal mode** (connected to home WiFi)
-2. Open **`http://ariacompanion.local`** in a browser on the same network
-   (or use the device's IP address)
-3. Under **OTA update**, choose the `aria-companion` binary and tap
-   **Upload & Restart**
-
-The server verifies the file is a valid ELF binary, replaces the binary
-atomically, and sends SIGTERM to the running daemon. The init system
-restarts it within a second. No reboot needed.
-
----
-
-## Management web interface
-
-Available at **`http://ariacompanion.local`** (or `http://<device-ip>`):
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Status page (BT powered, A2DP streaming) + OTA upload form |
-| `/status` | GET | JSON status: `{"mode","bt","streaming"}` |
-| `/update` | POST | Upload new `aria-companion` binary (multipart/form-data, field `bin`) |
-| `/reset` | POST | Clear WiFi credentials, reboot to setup mode |
-
-In setup mode, every URL except `/wifi` and `/status` redirects to the
-captive portal config page.
+The Bluetooth volume on your phone controls the level. Keep it reasonably
+high for best quality; adjust volume on the cast destination instead — very
+low BT volume combined with the fixed-gain I2S link can make background
+hiss more noticeable.
 
 ---
 
 ## Resetting WiFi
 
-To switch to a different network:
-
-**Via the web interface:** open `http://ariacompanion.local` → scroll down →
-tap **Reset WiFi credentials** → confirm. The Pi reboots into setup mode and
-the `AriaCompanion-XXXX` AP appears again.
-
-**Via SSH (if you have access):**
-```bash
-ssh root@ariacompanion.local   # password: aria
-touch /etc/aria-setup-needed
-reboot
-```
-
----
-
-## SSH access
-
-Dropbear SSH is included for debugging.
-
-```bash
-ssh root@ariacompanion.local
-# password: aria
-```
-
-Useful commands:
-```bash
-# Check streaming daemon logs
-cat /var/log/aria-companion.log
-
-# Check management server logs
-cat /var/log/aria-mgr.log
-
-# Check WiFi connection
-ip addr show wlan0
-wpa_cli status
-
-# Check Bluetooth status
-bluetoothctl show
-bluealsa-cli list-pcms
-
-# Restart everything
-/etc/init.d/S42bt-agent restart
-/etc/init.d/S50aria-companion restart
-```
+There's no reset button/endpoint yet — clear the WiFi bridge board's saved
+credentials by re-flashing it, or add an `ariaCompanionPrefs.clear()`-style
+reset trigger of your own (e.g. a boot-time button check) if you need this
+often.
 
 ---
 
@@ -254,63 +165,44 @@ AriaCompanion streams raw PCM with no header:
 AriaCast upsamples from 44 100 → 48 000 Hz internally using the polyphase FIR
 resampler before forwarding to the cast destination. No configuration needed.
 
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Raspberry Pi Zero W / 2W                                   │
-│                                                             │
-│  bluetoothd (BlueZ)  ←─── A2DP ──── Phone Bluetooth        │
-│       │                                                     │
-│  bluealsa (-p a2dp-sink)                                    │
-│       │  (ALSA PCM device: bluealsa:DEV=XX:XX:...,PROFILE=a2dp)
-│       │                                                     │
-│  aria-companion  ──────────── TCP :7001 ──────► AriaCast   │
-│                                                             │
-│  aria-mgr (HTTP :80)  ── setup: captive portal             │
-│                        ── normal: status + OTA upload       │
-│                                                             │
-│  avahi-daemon  ─── mDNS: _ariacompanion._tcp:7001          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Boot sequence
-
-| Init script | Service | Purpose |
-|-------------|---------|---------|
-| S30network | hostapd + dnsmasq *or* wpa_supplicant + dhcpcd | AP setup mode or home WiFi |
-| S35aria-mgr | aria-mgr.py | HTTP management server |
-| S40bluetooth | bluetoothd | Bluetooth stack |
-| S41bluealsa | bluealsa | A2DP sink ALSA device |
-| S42bt-agent | bt-agent.py | Auto-accept BT pairing |
-| S50aria-companion | aria-companion | PCM capture → TCP stream |
+The WiFi bridge board is the TCP **server**; AriaCast connects to it as a
+**client** and reads a continuous stream — the board accepts one connection
+at a time and simply forwards whatever PCM arrives over I2S.
 
 ---
 
 ## Troubleshooting
 
-**The AP doesn't appear after first boot**
-- Wait 30–60 seconds; the BCM43438 WiFi chip takes time to initialise
-- Check that the SD card was flashed correctly (the boot partition must be FAT32)
+**Loud static/noise instead of audio**
+- Almost always an I2S wiring issue: double-check BCK and WS aren't swapped
+  between the two boards, and that GND is actually common — a missing ground
+  reference produces exactly this symptom.
 
-**`AriaCompanion` doesn't appear in Bluetooth scan**
-- Give it 10–15 seconds after connecting to the AP or home WiFi
-- SSH in and run `bluetoothctl show` — `Discoverable: yes` should appear
-- Try `killall bt-agent.py && python3 /opt/aria-companion/bt-agent.py &`
+**Audio works but stutters intermittently**
+- Make sure `WiFi.setSleep(false)` is in the WiFi bridge sketch (it is by
+  default) — WiFi power-save parks the radio periodically and is a classic
+  cause of streaming stutter.
+- Check WiFi signal strength/distance from the router; weak signal causes
+  retransmissions that a jitter buffer can only absorb so much of.
+- Confirm the board isn't overheating/resetting (see below) — a reset drops
+  the TCP connection and sounds like a stutter followed by silence.
+
+**WiFi bridge board runs hot and resets**
+- Make sure `loop()` has a `delay(1)` (or similar) at the end — a loop that
+  never yields can spin the CPU at 100%, starve the watchdog, and reset.
+
+**"GPIO number error" on boot (gpio_func_sel / gpio_input_enable)**
+- A pin passed to the I2S config is invalid for that board/config — check the
+  pin table at the top of the sketch matches your exact module (PSRAM
+  type/pin count vary between ESP32-S3 variants especially).
 
 **AriaCast can't find the device (mDNS fails)**
-- Some routers block mDNS between clients; use the IP address directly
-- Find the IP: check your router's DHCP list for hostname `AriaCompanion`,
-  or SSH in and run `ip addr show wlan0`
+- Some routers block mDNS between clients; enter the IP address manually
+  instead (check your router's DHCP client list, or read it off the WiFi
+  bridge board's Serial Monitor output after connecting).
 
-**Audio is choppy or cuts out**
-- Keep Bluetooth volume at 100% on the phone; adjust elsewhere
-- Make sure the Pi has good WiFi signal; move it closer to your router
-- SSH in and check `cat /var/log/aria-companion.log` for ALSA errors
-
-**OTA upload fails with "Not a valid ELF binary"**
-- Make sure you're uploading the binary for the right architecture:
-  `aria-companion` from `output-pizero2w/` for Pi Zero 2W (aarch64),
-  `output-pizerow/` for Pi Zero W (armv6)
+**Powering both boards from one supply**
+- Bridge **5V-to-VIN** (one board's 5V pin to the other's VIN pin), not
+  **3.3V-to-3.3V** — VIN is the unregulated input to each board's own
+  regulator; feeding 3.3V into it directly can leave the far board without
+  enough headroom to regulate properly and it may not power on at all.
