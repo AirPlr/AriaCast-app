@@ -19,10 +19,12 @@
 // work fine here too). Pins below are tuned for a YD-ESP32-S3 (ESP32-S3-
 // DevKitC-1 clone, N8R2 — quad PSRAM, so GPIO33-37 are free too); adjust if
 // you're on a different module/variant.
-// Library needed (Arduino Library Manager): "arduino-audio-tools" by
-// pschatzmann (for I2SStream — same driver family the BT-sink board's
-// ESP32-A2DP library uses internally, so the two never fight over the I2S
-// peripheral even though they're now separate binaries).
+// No extra libraries needed — uses ESP-IDF's built-in driver/i2s.h and the
+// ESP32 core's WiFi/WebServer/DNSServer/Preferences/ESPmDNS directly. This
+// board runs standalone (never shares a binary with the BT-sink board's
+// Bluetooth stack), so there's no reason to pull in arduino-audio-tools
+// just for a raw I2S read loop — one less dependency, one less thing that
+// can change API between versions.
 //
 // Wiring to the BT-sink board — GPIO numbers differ per side since the two
 // boards are different chips (classic ESP32 vs S3), just match signal to
@@ -39,7 +41,7 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
-#include "AudioTools.h"
+#include <driver/i2s.h>
 
 #define PIN_I2S_BCK  4
 #define PIN_I2S_WS   5
@@ -49,8 +51,9 @@
 #define TCP_PORT       7001   // must match AudioCastService.COMPANION_STREAM_PORT
 #define SAMPLE_RATE    44100  // must match what AriaCast expects from a companion (README)
 #define I2S_READ_CHUNK 3528   // 20ms @ 44.1kHz/16-bit/stereo, same granularity AriaCast reads in
+#define I2S_DMA_BUF_COUNT 16
+#define I2S_DMA_BUF_LEN   256  // frames (stereo samples) per buffer; 256*4 bytes = 1024 bytes/buffer
 
-I2SStream i2s_in;
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
 
@@ -154,21 +157,29 @@ void setup() {
     MDNS.addService("ariacompanion", "tcp", TCP_PORT);
     Serial.println("mDNS service _ariacompanion._tcp announced, TCP server starting...");
 
-    auto cfg = i2s_in.defaultConfig(RX_MODE);
-    cfg.is_master = false; // clock/WS come from the BT-sink board over the shared wires
-    cfg.sample_rate = SAMPLE_RATE;
-    cfg.bits_per_sample = 16;
-    cfg.channels = 2;
-    cfg.pin_bck = PIN_I2S_BCK;
-    cfg.pin_ws = PIN_I2S_WS;
-    cfg.pin_data = PIN_I2S_DATA;    // TX field, harmless to also set in RX mode
-    cfg.pin_data_rx = PIN_I2S_DATA; // some AudioTools versions read the RX data pin from here instead
-    // Bigger than the library default so a brief WiFi stall (tcpClient.write()
-    // blocking for a few ms under congestion) doesn't overflow the DMA buffer
-    // and glitch the audio — trades a bit of latency for tolerance to jitter.
-    cfg.buffer_count = 16;
-    cfg.buffer_size = 1024;
-    i2s_in.begin(cfg);
+    // Slave RX: clock/WS come from the BT-sink board over the shared wires,
+    // we just read whatever arrives. DMA buffer sized generously (16 x 1024
+    // bytes = 16KB) so a brief WiFi stall (tcpClient.write() blocking for a
+    // few ms under congestion) doesn't overflow it and glitch the audio.
+    i2s_config_t i2sCfg = {
+        .mode = (i2s_mode_t)(I2S_MODE_SLAVE | I2S_MODE_RX),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = I2S_DMA_BUF_COUNT,
+        .dma_buf_len = I2S_DMA_BUF_LEN
+    };
+    i2s_driver_install(I2S_NUM_0, &i2sCfg, 0, NULL);
+
+    i2s_pin_config_t pinCfg = {
+        .bck_io_num = PIN_I2S_BCK,
+        .ws_io_num = PIN_I2S_WS,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = PIN_I2S_DATA
+    };
+    i2s_set_pin(I2S_NUM_0, &pinCfg);
 
     tcpServer.begin();
 }
@@ -187,7 +198,8 @@ void loop() {
     }
 
     static uint8_t buf[I2S_READ_CHUNK];
-    size_t bytesRead = i2s_in.readBytes(buf, I2S_READ_CHUNK);
+    size_t bytesRead = 0;
+    i2s_read(I2S_NUM_0, buf, I2S_READ_CHUNK, &bytesRead, portMAX_DELAY);
 
     // Drop samples when nobody's connected instead of blocking the I2S read
     // loop — keeps the DMA buffers from backing up while AriaCast isn't casting.
