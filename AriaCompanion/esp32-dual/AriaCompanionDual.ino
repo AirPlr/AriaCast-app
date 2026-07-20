@@ -11,10 +11,12 @@
 // will NOT work on S3/C3/C6, which dropped BR/EDR).
 // Library needed: "ESP32-A2DP" by pschatzmann (Arduino Library Manager).
 //
-// Wiring between the two boards (same GPIO number on both sides):
-//   GPIO26 <-> GPIO26   I2S BCK
-//   GPIO25 <-> GPIO25   I2S WS
-//   GPIO22 <-> GPIO22   I2S DATA (BT board drives it, WiFi board reads it)
+// Wiring between the two boards (same GPIO number on both sides, all on the
+// same header row on a typical 30-pin ESP32 DevKit — check your board's
+// silkscreen, layouts vary between DevKitC/NodeMCU-32S/DOIT clones):
+//   GPIO18 <-> GPIO18   I2S BCK
+//   GPIO19 <-> GPIO19   I2S WS
+//   GPIO23 <-> GPIO23   I2S DATA (BT board drives it, WiFi board reads it)
 //   GPIO17  -> GPIO16   UART TX -> RX (handshake)
 //   GPIO16 <-  GPIO17   UART RX <- TX (handshake)
 //   GND    <-> GND
@@ -31,9 +33,9 @@
 #define BT_DEVICE_NAME "AriaCompanion"
 
 // ---- shared pin map (identical on both boards) ----
-#define PIN_I2S_BCK  26
-#define PIN_I2S_WS   25
-#define PIN_I2S_DATA 22
+#define PIN_I2S_BCK  18
+#define PIN_I2S_WS   19
+#define PIN_I2S_DATA 23
 #define PIN_HS_RX    16
 #define PIN_HS_TX    17
 #define PIN_LED      2
