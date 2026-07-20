@@ -325,6 +325,34 @@ class DiscoveryManager(private val context: Context) {
         }
     }
 
+    /**
+     * Adds a server that was entered manually (e.g. via the "Manual Server Entry" plugin)
+     * rather than discovered through mDNS/SSDP/UDP. Returns false if the host is not a
+     * valid IP address, true once the server has been merged into [servers].
+     */
+    fun addManualServer(host: String, port: Int, name: String): Boolean {
+        if (!Patterns.IP_ADDRESS.matcher(host).matches()) {
+            Log.w(TAG, "addManualServer: invalid host '$host'")
+            return false
+        }
+        val server = Server(
+            name = name,
+            host = host,
+            port = port,
+            version = "manual",
+            codecs = emptyList(),
+            sampleRate = 48000,
+            channels = 2,
+            platform = "Manual"
+        )
+        synchronized(discoveredServers) {
+            discoveredServers[name] = server
+            _servers.value = discoveredServers.values.toList()
+        }
+        Log.d(TAG, "Manually added server: $name @ $host:$port")
+        return true
+    }
+
     private suspend fun startSsdpDiscoveryLoop() = withContext(Dispatchers.IO) {
         val ssdpAddress = InetAddress.getByName("239.255.255.250")
         val searchTargets = listOf(
