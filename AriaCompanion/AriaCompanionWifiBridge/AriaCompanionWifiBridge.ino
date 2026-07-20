@@ -208,8 +208,8 @@ void loop() {
     static uint32_t lastLog = 0;
     if (millis() - lastLog > 1000) {
         lastLog = millis();
-        Serial.printf("I2S read: %u/%u bytes, level: %.1f dBFS%s\n",
-            (unsigned)bytesRead, (unsigned)I2S_READ_CHUNK, levelDbfs(buf, bytesRead),
+        Serial.printf("I2S read: %u/%u bytes, level: %.1f dBFS, WiFi RSSI: %d dBm%s\n",
+            (unsigned)bytesRead, (unsigned)I2S_READ_CHUNK, levelDbfs(buf, bytesRead), WiFi.RSSI(),
             (tcpClient && tcpClient.connected()) ? " [client connected]" : " [no client]");
     }
 
