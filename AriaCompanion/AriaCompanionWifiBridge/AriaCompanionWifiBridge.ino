@@ -162,7 +162,8 @@ void setup() {
     cfg.channels = 2;
     cfg.pin_bck = PIN_I2S_BCK;
     cfg.pin_ws = PIN_I2S_WS;
-    cfg.pin_data = PIN_I2S_DATA;
+    cfg.pin_data = PIN_I2S_DATA;    // TX field, harmless to also set in RX mode
+    cfg.pin_data_rx = PIN_I2S_DATA; // some AudioTools versions read the RX data pin from here instead
     // Bigger than the library default so a brief WiFi stall (tcpClient.write()
     // blocking for a few ms under congestion) doesn't overflow the DMA buffer
     // and glitch the audio — trades a bit of latency for tolerance to jitter.
