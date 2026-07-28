@@ -35,6 +35,7 @@ import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.aria.ariacast.compat.DeviceCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -153,8 +154,10 @@ class MainActivity : AppCompatActivity() {
         val companionIp = sharedPreferences.getString(AriaCompanionActivity.KEY_COMPANION_IP, null)
         if (companionEnabled && !companionIp.isNullOrEmpty()) {
             launchCompanionCast()
-        } else {
+        } else if (DeviceCompat.supportsAudioPlaybackCapture()) {
             startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+        } else {
+            Toast.makeText(this, getString(R.string.audio_capture_unsupported), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -263,7 +266,11 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             } else {
                 if (selectedServers.isNotEmpty()) {
-                    startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    if (DeviceCompat.supportsAudioPlaybackCapture()) {
+                        startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    } else {
+                        Toast.makeText(this, getString(R.string.audio_capture_unsupported), Toast.LENGTH_LONG).show()
+                    }
                 } else {
                     Toast.makeText(this, getString(R.string.select_server_first), Toast.LENGTH_SHORT).show()
                 }
