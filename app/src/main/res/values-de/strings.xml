@@ -8,8 +8,7 @@
     <string name="up_to_date_message">Sie verwenden bereits die neueste Version.</string>
     <string name="ok">OK</string>
     <string name="update_failed_title">Update-Prüfung fehlgeschlagen</string>
-    <string name="update_failed_message">Verbindung zu GitHub fehlgeschlagen.</string>
-
+    <string name="update_failed_message">Verbindung zu GitHub zur Überprüfung von Updates fehlgeschlagen.</string>
     <!-- Main Activity -->
     <string name="media_projection_denied">MediaProjection-Berechtigung verweigert.</string>
     <string name="select_server_first">Bitte wählen Sie zuerst einen Server aus.</string>
@@ -38,7 +37,6 @@
     <string name="no_servers_found">Keine Server gefunden</string>
     <string name="grant_notification_permission">Benachrichtigungsberechtigung erteilen</string>
     <string name="devices_count_format">%1$d Geräte</string>
-
     <!-- Settings Activity -->
     <string name="settings">Einstellungen</string>
     <string name="general">Allgemein</string>
@@ -79,7 +77,6 @@
     <string name="reset_last_server_desc">Gespeicherte Serververbindungsdetails löschen</string>
     <string name="plugin_folder">Plugin-Ordner</string>
     <string name="change_plugin_folder_desc">Plugin-Ordner ändern oder löschen</string>
-
     <!-- Protocols Activity -->
     <string name="protocols">Protokolle</string>
     <string name="protocols_desc">Unterstützte Streaming-Protokolle verwalten</string>
@@ -91,7 +88,6 @@
     <string name="google_cast_protocol_desc">Streamen auf Chromecast- und Nest-Geräte</string>
     <string name="airplay_protocol">AirPlay 1</string>
     <string name="airplay_protocol_desc">Streamen auf kompatible AirPlay-Lautsprecher</string>
-
     <!-- Plugins Activity -->
     <string name="plugin_folder_updated">Plugin-Ordner aktualisiert</string>
     <string name="plugin_folder_title">Plugin-Ordner</string>
@@ -110,7 +106,6 @@
     <string name="plugin_consent_message">Plugins können benutzerdefinierte Skripte ausführen, um mit Medien und Servern zu interagieren. Installieren Sie Plugins nur aus vertrauenswürdigen Quellen.\n\nMöchten Sie das Plugin-System aktivieren?</string>
     <string name="accept">Akzeptieren</string>
     <string name="decline">Ablehnen</string>
-
     <!-- AudioCastService -->
     <string name="audio_video">Audio &amp; Video</string>
     <string name="audio_only">Nur Audio</string>
@@ -121,22 +116,40 @@
     <string name="unknown">Unbekannt</string>
     <string name="multiroom_group">Multiroom-Gruppe</string>
     <string name="connecting">Verbindung wird hergestellt…</string>
-
     <!-- Tile Service -->
     <string name="tile_tap_to_cast">Tippen zum Streamen</string>
     <string name="tile_discovering">Suchen…</string>
     <string name="tile_connecting">Verbinden…</string>
     <string name="tile_casting">Streaming…</string>
     <string name="tile_error">Fehler aufgetreten</string>
-
     <!-- Packet Log Activity -->
     <string name="packet_logs">Paketprotokolle</string>
     <string name="search_logs">Protokolle durchsuchen…</string>
     <string name="clear_logs">Protokolle löschen</string>
-
     <!-- Create Group Dialog -->
     <string name="create_speaker_group">Lautsprechergruppe erstellen</string>
     <string name="group_name">Gruppenname</string>
     <string name="select_devices">Geräte auswählen</string>
     <string name="save">Speichern</string>
+    <string name="airplay2_protocol">AirPlay 2</string>
+    <string name="airplay2_protocol_desc">Übertrage auf Macs, AppleTVs und HomePods</string>
+    <string name="no_pins_saved">Keine PINs gespeichert</string>
+    <string name="edit_pin">PIN Bearbeiten</string>
+    <string name="delete_pin">PIN Löschen</string>
+    <string name="airplay_pin_message">Gebe den Code ein der auf dem Geräte Bilschirm gezeigt wird (%1$s)</string>
+    <string name="manage_airplay_pins">Verwalten von AirPlay PINs</string>
+    <string name="manage_airplay_pins_desc">Gespeicherte AirPlay-PINs für gekoppelte Geräte verwalten</string>
+    <string name="companion">AriaCompanion</string>
+    <string name="companion_desc">Streaming über ESP32-Bluetooth-Bridge</string>
+    <string name="companion_device">Begleitgerät</string>
+    <string name="companion_status_searching">Suche nach AriaCompanion…</string>
+    <string name="companion_status_found">Gefunden: %1$s (%2$s)</string>
+    <string name="companion_status_none">Kein Gerät gefunden</string>
+    <string name="companion_scan">Scan</string>
+    <string name="companion_manual_ip">IP manuell eingeben</string>
+    <string name="companion_manual_ip_desc">Geben Sie die IP-Adresse des ESP32 direkt ein.</string>
+    <string name="companion_manual_ip_hint">192.168.1.x</string>
+    <string name="companion_setup">Ersteinrichtung</string>
+    <string name="companion_setup_desc">Verbinden Sie Ihr Telefon mit dem WLAN-Netzwerk „AriaCompanion-XXXX“, das der ESP32 bereitstellt, und geben Sie anschließend unten die Zugangsdaten für Ihr Heim-WLAN ein.</string>
+    <string name="companion_wifi_ssid">WLAN-SSID für zu Hause</string>
 </resources>
