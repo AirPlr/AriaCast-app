@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.aria.ariacast.compat.startForegroundCompat
 import com.aria.ariacast.raop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -105,7 +106,7 @@ class AirPlayService : Service() {
             return
         }
 
-        startForeground(NOTIFICATION_ID, createNotification(device.name), 
+        startForegroundCompat(NOTIFICATION_ID, createNotification(device.name),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0)
 
         scope.launch {

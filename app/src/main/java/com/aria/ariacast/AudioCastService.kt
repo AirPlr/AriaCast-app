@@ -57,6 +57,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import com.aria.ariacast.airplay2.AirPlay2Client
 import com.aria.ariacast.airplay2.NeedsPinException
+import com.aria.ariacast.compat.startForegroundCompat
 import com.aria.ariacast.raop.AudioResampler
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -370,7 +371,7 @@ class AudioCastService : Service() {
             val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             } else 0
-            startForeground(NOTIFICATION_ID, notification, serviceType)
+            startForegroundCompat(NOTIFICATION_ID, notification, serviceType)
         } catch (e: Exception) {
             if (e is ForegroundServiceStartNotAllowedException) {
                 Log.e(TAG, "Foreground service start not allowed", e)
@@ -469,7 +470,7 @@ class AudioCastService : Service() {
             val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             } else 0
-            startForeground(NOTIFICATION_ID, notification, serviceType)
+            startForegroundCompat(NOTIFICATION_ID, notification, serviceType)
         } catch (e: Exception) {
             if (e is ForegroundServiceStartNotAllowedException) {
                 Log.e(TAG, "Foreground service start not allowed", e)
