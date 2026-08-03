@@ -74,6 +74,20 @@
 
 <hr />
 
+<h2>🤖 Android Version Compatibility</h2>
+<p>
+  AriaCast supports Android 8.0 (Oreo) and up, but how on-device audio capture works depends on your Android version:
+</p>
+<ul>
+  <li><b>Android 10 (Q) and newer:</b> Capture works out of the box via <code>AudioPlaybackCaptureConfiguration</code>, the official public API for this — no extra setup needed.</li>
+  <li><b>Android 8.0, 8.1, and 9:</b> This API doesn't exist yet on these versions. The only other API that can read the system's mixed audio output, <code>REMOTE_SUBMIX</code>, requires the signature-level <code>CAPTURE_AUDIO_OUTPUT</code> permission — Android refuses to grant this to a regular installed app, full stop. It can only be granted manually on a <b>rooted</b> device (AriaCast attempts this itself via <code>su</code>/<code>pm grant</code> the first time you cast). <b>Root is required for on-device capture on these versions — there's no workaround for it.</b></li>
+</ul>
+<p>
+  If your Android 8/8.1/9 device isn't rooted, on-device capture isn't available; use <b>Companion mode</b> instead (streaming audio from an <a href="AriaCompanion">AriaCompanion</a> ESP32 bridge or a desktop companion app), which has no such restriction.
+</p>
+
+<hr />
+
 <h2>🛠️ Setup & Usage</h2>
 <ol>
   <li><b>Install:</b> Download the latest <a href="https://github.com/AirPlr/AriaCast-app/releases">APK here</a>.</li>
