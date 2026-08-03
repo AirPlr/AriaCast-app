@@ -36,6 +36,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.aria.ariacast.compat.DeviceCompat
+import com.aria.ariacast.compat.RootAudioCapture
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -157,8 +158,51 @@ class MainActivity : AppCompatActivity() {
         } else if (DeviceCompat.supportsAudioPlaybackCapture()) {
             startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
         } else {
-            Toast.makeText(this, getString(R.string.audio_capture_unsupported), Toast.LENGTH_LONG).show()
+            startCaptureViaRootFallbackOrWarn()
         }
+    }
+
+    /**
+     * Below API 29 there's no AudioPlaybackCaptureConfiguration; the only other way to get the
+     * system's mixed audio without a companion device is REMOTE_SUBMIX, which needs a
+     * signature-level permission only a rooted device can grant. Falls back to the
+     * "use Companion mode" message if that's not available.
+     */
+    private fun startCaptureViaRootFallbackOrWarn() {
+        lifecycleScope.launch {
+            if (RootAudioCapture.isAvailable(this@MainActivity)) {
+                launchRemoteSubmixCast()
+            } else {
+                Toast.makeText(this@MainActivity, getString(R.string.audio_capture_unsupported), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun launchRemoteSubmixCast() {
+        val serviceIntent = Intent(this, AudioCastService::class.java).apply {
+            action = AudioCastService.ACTION_START_REMOTE_SUBMIX
+            if (selectedServers.size == 1) {
+                val s = selectedServers[0]
+                putExtra(AudioCastService.EXTRA_SERVER_HOST, s.host)
+                putExtra(AudioCastService.EXTRA_SERVER_PORT, s.port)
+                putExtra(AudioCastService.EXTRA_SERVER_NAME, s.name)
+                putExtra(AudioCastService.EXTRA_SERVER_PLATFORM, s.platform)
+                putExtra(AudioCastService.EXTRA_SERVER_EXTRA, s.extra)
+            } else {
+                val array = JSONArray()
+                selectedServers.forEach { s ->
+                    array.put(JSONObject().apply {
+                        put("name", s.name)
+                        put("host", s.host)
+                        put("port", s.port)
+                        put("platform", s.platform)
+                        put("extra", s.extra)
+                    })
+                }
+                putExtra(AudioCastService.EXTRA_SERVERS_JSON, array.toString())
+            }
+        }
+        ContextCompat.startForegroundService(this, serviceIntent)
     }
 
     private fun launchCompanionCast() {
@@ -269,7 +313,7 @@ class MainActivity : AppCompatActivity() {
                     if (DeviceCompat.supportsAudioPlaybackCapture()) {
                         startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
                     } else {
-                        Toast.makeText(this, getString(R.string.audio_capture_unsupported), Toast.LENGTH_LONG).show()
+                        startCaptureViaRootFallbackOrWarn()
                     }
                 } else {
                     Toast.makeText(this, getString(R.string.select_server_first), Toast.LENGTH_SHORT).show()

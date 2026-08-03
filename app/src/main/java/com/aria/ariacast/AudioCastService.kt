@@ -21,6 +21,7 @@ import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Binder
@@ -292,6 +293,12 @@ class AudioCastService : Service() {
                 if (destinations.isNotEmpty()) startCastingWithCompanion(destinations)
                 return START_STICKY
             }
+            ACTION_START_REMOTE_SUBMIX -> {
+                cleanupSession()
+                val destinations = parseDestinations(intent)
+                if (destinations.isNotEmpty()) startCastingRemoteSubmix(destinations)
+                return START_STICKY
+            }
             ACTION_START -> {
                 cleanupSession()
 
@@ -537,50 +544,143 @@ class AudioCastService : Service() {
                 return@launch
             }
 
-            val videoEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_VIDEO_ENABLED, false)
+            runCastPipeline(destinations, allowVideo = true)
+        }
+    }
 
-            if (destinations.any { it.platform == "DLNA" || it.platform == "Google Cast" || it.platform == "AirPlay" }) {
-                startDlnaHttpServer()
-                startArtworkServer()
+    /**
+     * Everything downstream of having an initialized [audioRecord], shared by every capture
+     * source (on-device MediaProjection capture, REMOTE_SUBMIX). [allowVideo] should be false
+     * for capture sources with no backing MediaProjection/VirtualDisplay to mirror video from.
+     */
+    private suspend fun CoroutineScope.runCastPipeline(destinations: List<CastDestination>, allowVideo: Boolean) {
+        val videoEnabled = allowVideo && sharedPreferences.getBoolean(SettingsActivity.KEY_VIDEO_ENABLED, false)
+
+        if (destinations.any { it.platform == "DLNA" || it.platform == "Google Cast" || it.platform == "AirPlay" }) {
+            startDlnaHttpServer()
+            startArtworkServer()
+        }
+
+        launch {
+            try {
+                audioRecord?.startRecording()
+                val audioBuffer = ByteBuffer.allocate(FRAME_SIZE)
+                while (isActive) {
+                    val readResult = audioRecord?.read(audioBuffer.array(), 0, FRAME_SIZE) ?: 0
+                    if (readResult == FRAME_SIZE) {
+                        _audioBufferFlow.emit(audioBuffer.array().copyOf())
+                    } else if (readResult < 0) {
+                        Log.e(TAG, "AudioRecord read error: $readResult")
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Audio recording loop failed", e)
             }
+        }
 
-            launch { 
+        destinations.forEach { dest ->
+            when (dest.platform) {
+                "DLNA" -> launch { startDlnaSession(dest) }
+                "Google Cast" -> launch { startGoogleCastSession(dest) }
+                "AirPlay" -> launch { startAirPlaySession(dest) }
+                "AirPlay2" -> launch { startAirPlay2Session(dest) }
+                else -> {
+                    launch { startControlSession(dest) }
+                    if (videoEnabled && destinations.size == 1) {
+                        launch { startVideoSession(dest) }
+                    }
+                    launch { startAudioSession(dest) }
+                    launch { startStatsSession(dest) }
+                }
+            }
+        }
+
+        startMetadataRefreshLoop()
+        _metadata.value?.let { sendMetadata(it) }
+    }
+
+    /**
+     * Fallback for Android 8/8.1/9, where AudioPlaybackCaptureConfiguration doesn't exist: capture
+     * via MediaRecorder.AudioSource.REMOTE_SUBMIX instead. Only reachable if RootAudioCapture has
+     * already confirmed CAPTURE_AUDIO_OUTPUT is held (rooted device) - see MainActivity.castToServers.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startCastingRemoteSubmix(destinations: List<CastDestination>) {
+        sessionJob?.cancel()
+
+        _activeDestinations.value = destinations
+        _state.value = CastState.CONNECTING
+        sessionJob = SupervisorJob()
+        val sessionScope = CoroutineScope(Dispatchers.IO + sessionJob!!)
+
+        originalVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+
+        if (destinations.size == 1) {
+            with(sharedPreferences.edit()) {
+                putString(KEY_LAST_SERVER_HOST, destinations[0].host)
+                putInt(KEY_LAST_SERVER_PORT, destinations[0].port)
+                putString(KEY_LAST_SERVER_NAME, destinations[0].name)
+                apply()
+            }
+        }
+
+        try {
+            startForegroundCompat(NOTIFICATION_ID, createNotification(), 0)
+        } catch (e: Exception) {
+            if (e is ForegroundServiceStartNotAllowedException) {
+                Log.e(TAG, "Foreground service start not allowed", e)
+                _state.value = CastState.ERROR
+                return
+            } else {
+                throw e
+            }
+        }
+
+        sessionScope.launch {
+            var attempt = 0
+            var initialized = false
+
+            while (attempt < 3 && !initialized && isActive) {
+                if (attempt > 0) delay(400)
+                attempt++
+
                 try {
-                    audioRecord?.startRecording()
-                    val audioBuffer = ByteBuffer.allocate(FRAME_SIZE)
-                    while (isActive) {
-                        val readResult = audioRecord?.read(audioBuffer.array(), 0, FRAME_SIZE) ?: 0
-                        if (readResult == FRAME_SIZE) {
-                            _audioBufferFlow.emit(audioBuffer.array().copyOf())
-                        } else if (readResult < 0) {
-                            Log.e(TAG, "AudioRecord read error: $readResult")
-                            break
-                        }
+                    val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+                    val bufferSize = (FRAME_SIZE * 4).coerceAtLeast(minBufSize)
+
+                    val recorder = AudioRecord.Builder()
+                        .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .setSampleRate(SAMPLE_RATE)
+                                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                                .build()
+                        )
+                        .setBufferSizeInBytes(bufferSize)
+                        .build()
+
+                    if (recorder.state == AudioRecord.STATE_INITIALIZED) {
+                        audioRecord = recorder
+                        initialized = true
+                    } else {
+                        Log.e(TAG, "AudioRecord (REMOTE_SUBMIX) not initialized, attempt $attempt")
+                        recorder.release()
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Audio recording loop failed", e)
+                    Log.e(TAG, "AudioRecord (REMOTE_SUBMIX) initialization attempt $attempt failed: ${e.message}")
                 }
             }
 
-            destinations.forEach { dest ->
-                when (dest.platform) {
-                    "DLNA" -> launch { startDlnaSession(dest) }
-                    "Google Cast" -> launch { startGoogleCastSession(dest) }
-                    "AirPlay" -> launch { startAirPlaySession(dest) }
-                    "AirPlay2" -> launch { startAirPlay2Session(dest) }
-                    else -> {
-                        launch { startControlSession(dest) }
-                        if (videoEnabled && destinations.size == 1) { 
-                            launch { startVideoSession(dest) }
-                        }
-                        launch { startAudioSession(dest) }
-                        launch { startStatsSession(dest) }
-                    }
-                }
+            if (!initialized) {
+                Log.e(TAG, "Failed to initialize REMOTE_SUBMIX AudioRecord after $attempt attempts")
+                _state.value = CastState.ERROR
+                return@launch
             }
-            
-            startMetadataRefreshLoop()
-            _metadata.value?.let { sendMetadata(it) }
+
+            runCastPipeline(destinations, allowVideo = false)
         }
     }
 
@@ -1859,6 +1959,7 @@ class AudioCastService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "AudioCastChannel"
         const val ACTION_START = "com.aria.ariacast.ACTION_START"
         const val ACTION_START_COMPANION = "com.aria.ariacast.ACTION_START_COMPANION"
+        const val ACTION_START_REMOTE_SUBMIX = "com.aria.ariacast.ACTION_START_REMOTE_SUBMIX"
         const val ACTION_STOP = "com.aria.ariacast.ACTION_STOP"
         const val EXTRA_MEDIA_PROJECTION_TOKEN = "com.aria.ariacast.EXTRA_MEDIA_PROJECTION_TOKEN"
         const val EXTRA_SERVER_HOST = "com.aria.ariacast.EXTRA_SERVER_HOST"
