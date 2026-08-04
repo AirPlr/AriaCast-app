@@ -17,6 +17,7 @@
 
     <!-- Main Activity -->
     <string name="media_projection_denied">MediaProjection permission denied.</string>
+    <string name="record_audio_permission_required">Microphone permission is required to capture and cast audio.</string>
     <string name="select_server_first">Please select a server first.</string>
     <string name="scanning">Scanning…</string>
     <string name="refresh">Refresh</string>

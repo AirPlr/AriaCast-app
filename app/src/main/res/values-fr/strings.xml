@@ -12,6 +12,7 @@
 
     <!-- Main Activity -->
     <string name="media_projection_denied">Autorisation MediaProjection refusée.</string>
+    <string name="record_audio_permission_required">L\'autorisation Microphone est requise pour capturer et diffuser l\'audio.</string>
     <string name="select_server_first">Veuillez d\'abord sélectionner un serveur.</string>
     <string name="scanning">Analyse…</string>
     <string name="refresh">Actualiser</string>
