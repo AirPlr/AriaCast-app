@@ -102,8 +102,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         findViewById<View>(R.id.notificationAccessLayout).setOnClickListener {
-            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-            startActivity(intent)
+            showNotificationAccessExplanationDialog()
         }
 
         findViewById<View>(R.id.updateLayout).setOnClickListener {
@@ -303,6 +302,17 @@ class SettingsActivity : AppCompatActivity() {
             "zh" -> "简体中文"
             else -> getString(R.string.language_default)
         }
+    }
+
+    private fun showNotificationAccessExplanationDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.notification_access_required_title)
+            .setMessage(R.string.notification_access_required_message)
+            .setPositiveButton(R.string.open_notification_settings) { _, _ ->
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun handlePacketLogClick() {
