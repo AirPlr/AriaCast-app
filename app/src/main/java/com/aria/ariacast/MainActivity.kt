@@ -16,7 +16,6 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.Menu
@@ -575,17 +574,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             permissionButton.visibility = View.GONE
         }
-    }
-
-    private fun showNotificationAccessExplanationDialog() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.notification_access_required_title)
-            .setMessage(R.string.notification_access_required_message)
-            .setPositiveButton(R.string.open_notification_settings) { _, _ ->
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
     }
 
     private fun showPairingPinDialog(host: String) {

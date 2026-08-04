@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
@@ -302,17 +301,6 @@ class SettingsActivity : AppCompatActivity() {
             "zh" -> "简体中文"
             else -> getString(R.string.language_default)
         }
-    }
-
-    private fun showNotificationAccessExplanationDialog() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.notification_access_required_title)
-            .setMessage(R.string.notification_access_required_message)
-            .setPositiveButton(R.string.open_notification_settings) { _, _ ->
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
     }
 
     private fun handlePacketLogClick() {
