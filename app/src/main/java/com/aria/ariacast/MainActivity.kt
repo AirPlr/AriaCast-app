@@ -37,6 +37,9 @@ import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.aria.ariacast.ha.HaEcosystemClient
+import com.aria.ariacast.ha.HAModeManager
+import com.aria.ariacast.ha.HaRoom
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -47,8 +50,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
@@ -70,11 +75,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var syncSection: LinearLayout
     private lateinit var syncSliderContainer: LinearLayout
     lateinit var pluginContainer: LinearLayout
+    private lateinit var roomsSection: LinearLayout
+    private lateinit var roomRecyclerView: RecyclerView
+    private lateinit var serversSection: LinearLayout
 
     lateinit var discoveryManager: DiscoveryManager
     private lateinit var serverListAdapter: ServerAdapter
+    private lateinit var roomListAdapter: ServerAdapter
     private lateinit var groupListAdapter: GroupAdapter
     private lateinit var sharedPreferences: SharedPreferences
+    private lateinit var haModeManager: HAModeManager
     private lateinit var pluginManager: PluginManager
     private lateinit var updateManager: UpdateManager
 
@@ -127,7 +137,8 @@ class MainActivity : AppCompatActivity() {
                         putExtra(AudioCastService.EXTRA_SERVER_PORT, server.port)
                         putExtra(AudioCastService.EXTRA_SERVER_NAME, server.name)
                         putExtra(AudioCastService.EXTRA_SERVER_PLATFORM, server.platform)
-                        putExtra("com.aria.ariacast.EXTRA_SERVER_EXTRA", server.extra)
+                        putExtra(AudioCastService.EXTRA_SERVER_EXTRA, server.extra)
+                        putExtra(AudioCastService.EXTRA_ROOM_ID, server.roomId)
                     } else {
                         val array = JSONArray()
                         selectedServers.forEach { s ->
@@ -137,6 +148,7 @@ class MainActivity : AppCompatActivity() {
                                 put("port", s.port)
                                 put("platform", s.platform)
                                 put("extra", s.extra)
+                                put("room_id", s.roomId)
                             })
                         }
                         putExtra(AudioCastService.EXTRA_SERVERS_JSON, array.toString())
@@ -245,6 +257,11 @@ class MainActivity : AppCompatActivity() {
         addGroupButton = findViewById(R.id.addGroupButton)
         syncSection = findViewById(R.id.syncSection)
         syncSliderContainer = findViewById(R.id.syncSliderContainer)
+        roomsSection = findViewById(R.id.roomsSection)
+        roomRecyclerView = findViewById(R.id.roomRecyclerView)
+        serversSection = findViewById(R.id.serversSection)
+
+        haModeManager = HAModeManager(this)
 
         serverListAdapter = ServerAdapter(
             onServerClick = { server ->
@@ -258,8 +275,22 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        roomListAdapter = ServerAdapter(
+            onServerClick = { server ->
+                statusCard.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                isUserSelecting = true
+                castToServers(listOf(server))
+            },
+            onDeleteClick = {}
+        )
+
         serverRecyclerView.apply {
             adapter = serverListAdapter
+            layoutManager = LinearLayoutManager(this@MainActivity)
+        }
+
+        roomRecyclerView.apply {
+            adapter = roomListAdapter
             layoutManager = LinearLayoutManager(this@MainActivity)
         }
 
@@ -315,21 +346,59 @@ class MainActivity : AppCompatActivity() {
         }
 
         lifecycleScope.launch {
-            combine(discoveryManager.servers, _audioCastServiceFlow, _refreshTrigger) { servers, service, _ ->
-                Pair(servers, service)
-            }.collectLatest { (servers, service) ->
-                serverListAdapter.submitList(servers)
-
-                val isMultiroomEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_MULTIROOM_ENABLED, false)
-                if (isMultiroomEnabled) {
-                    val groups = getSavedGroups()
-                    val activeGroups = groups.filter { group ->
-                        group.hosts.all { host -> servers.any { it.host == host } }
+            combine(discoveryManager.servers, _audioCastServiceFlow, _refreshTrigger, haModeManager.enabled, haModeManager.addonBaseUrl) { servers, service, _, haEnabled, haUrl ->
+                Triple(servers, service, haEnabled to haUrl)
+            }.collectLatest { (servers, service, haConfig) ->
+                val (haEnabled, haUrl) = haConfig
+                
+                var rooms: List<HaRoom>? = null
+                if (haEnabled && haUrl.isNotEmpty()) {
+                    rooms = withTimeoutOrNull(3000L) {
+                        HaEcosystemClient(haUrl).fetchRooms()
                     }
-                    groupsSection.visibility = View.VISIBLE
-                    groupListAdapter.submitList(activeGroups)
-                } else {
+                }
+
+                if (rooms != null) {
+                    // DSP Mode
+                    serversSection.visibility = View.GONE
                     groupsSection.visibility = View.GONE
+                    roomsSection.visibility = View.VISIBLE
+                    
+                    val dspUrl = URL(haUrl)
+                    val dspHost = dspUrl.host
+                    val dspPort = if (dspUrl.port != -1) dspUrl.port else dspUrl.defaultPort
+                    
+                    val roomServers = rooms.map { room ->
+                        Server(
+                            name = room.name,
+                            host = dspHost,
+                            port = dspPort,
+                            version = "1.0",
+                            codecs = listOf("pcm"),
+                            sampleRate = 48000,
+                            channels = 2,
+                            platform = "DSP Room",
+                            roomId = room.id
+                        )
+                    }
+                    roomListAdapter.submitList(roomServers)
+                } else {
+                    // Discovery Mode
+                    serversSection.visibility = View.VISIBLE
+                    roomsSection.visibility = View.GONE
+                    serverListAdapter.submitList(servers)
+
+                    val isMultiroomEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_MULTIROOM_ENABLED, false)
+                    if (isMultiroomEnabled) {
+                        val groups = getSavedGroups()
+                        val activeGroups = groups.filter { group ->
+                            group.hosts.all { host -> servers.any { it.host == host } }
+                        }
+                        groupsSection.visibility = View.VISIBLE
+                        groupListAdapter.submitList(activeGroups)
+                    } else {
+                        groupsSection.visibility = View.GONE
+                    }
                 }
 
                 val lastHost = sharedPreferences.getString(AudioCastService.KEY_LAST_SERVER_HOST, null)

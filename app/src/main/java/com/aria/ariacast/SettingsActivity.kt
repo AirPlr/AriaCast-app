@@ -18,6 +18,8 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputEditText
+import com.aria.ariacast.ha.HAModeManager
 import kotlinx.coroutines.launch
 
 class SettingsActivity : AppCompatActivity() {
@@ -30,6 +32,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var accentColorPreview: ImageView
     private lateinit var videoCastSwitch: MaterialSwitch
     private lateinit var multiroomSwitch: MaterialSwitch
+    private lateinit var haModeSwitch: MaterialSwitch
+    private lateinit var haAddonStatusText: TextView
+    private lateinit var haModeManager: HAModeManager
     private lateinit var updateManager: UpdateManager
 
     private val openDocumentTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
@@ -66,6 +71,9 @@ class SettingsActivity : AppCompatActivity() {
         accentColorPreview = findViewById(R.id.accentColorPreview)
         videoCastSwitch = findViewById(R.id.videoCastSwitch)
         multiroomSwitch = findViewById(R.id.multiroomSwitch)
+        haModeSwitch = findViewById(R.id.haModeSwitch)
+        haAddonStatusText = findViewById(R.id.haAddonStatusText)
+        haModeManager = HAModeManager(this)
         updateManager = UpdateManager(this)
 
         findViewById<View>(R.id.themeLayout).setOnClickListener {
@@ -122,6 +130,10 @@ class SettingsActivity : AppCompatActivity() {
             resetLastServer()
         }
 
+        findViewById<View>(R.id.haAddonLayout).setOnClickListener {
+            showAddonUrlDialog()
+        }
+
         findViewById<View>(R.id.resetServerLayout).setOnLongClickListener {
             handlePacketLogClick()
             true
@@ -137,12 +149,37 @@ class SettingsActivity : AppCompatActivity() {
             sharedPreferences.edit().putBoolean(KEY_MULTIROOM_ENABLED, isChecked).apply()
         }
 
+        haModeSwitch.isChecked = haModeManager.enabled.value
+        haModeSwitch.setOnCheckedChangeListener { _, isChecked ->
+            haModeManager.setEnabled(isChecked)
+        }
+
+        val currentAddonUrl = haModeManager.addonBaseUrl.value
+        haAddonStatusText.text = if (currentAddonUrl.isEmpty()) getString(R.string.not_configured) else currentAddonUrl
+
         val versionText = findViewById<TextView>(R.id.versionText)
         versionText.text = getString(R.string.version_format, getString(R.string.app_version))
 
         updateThemeStatusText()
         updateAccentStatus()
         updateLanguageStatusText()
+    }
+
+    private fun showAddonUrlDialog() {
+        val input = TextInputEditText(this)
+        input.setText(haModeManager.addonBaseUrl.value)
+        input.hint = getString(R.string.addon_url_hint)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.enter_addon_url))
+            .setView(input)
+            .setPositiveButton(getString(R.string.save)) { _, _ ->
+                val url = input.text.toString()
+                haModeManager.setAddonBaseUrl(url)
+                haAddonStatusText.text = if (url.isEmpty()) getString(R.string.not_configured) else url
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
     }
 
     private fun showPluginFolderDialog() {

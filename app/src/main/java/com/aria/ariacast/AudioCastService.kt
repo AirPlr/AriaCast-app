@@ -78,7 +78,8 @@ data class CastDestination(
     val port: Int,
     val platform: String? = null,
     var delayMs: Int = 0,
-    val extra: String? = null
+    val extra: String? = null,
+    val roomId: String? = null
 )
 
 class AudioCastService : Service() {
@@ -307,6 +308,13 @@ class AudioCastService : Service() {
                 }
                 return START_STICKY
             }
+            ACTION_START_COMPANION -> {
+                val destinations = parseDestinations(intent)
+                if (destinations.isNotEmpty()) {
+                    startCastingWithCompanion(destinations)
+                }
+                return START_STICKY
+            }
             ACTION_STOP -> {
                 stopCasting()
                 return START_NOT_STICKY
@@ -327,7 +335,8 @@ class AudioCastService : Service() {
                     host = obj.getString("host"),
                     port = obj.getInt("port"),
                     platform = obj.optString("platform", null),
-                    extra = obj.optString("extra", null)
+                    extra = obj.optString("extra", null),
+                    roomId = obj.optString("room_id", null)
                 ))
             }
         } else {
@@ -336,10 +345,11 @@ class AudioCastService : Service() {
             val name = intent.getStringExtra(EXTRA_SERVER_NAME)
             val platform = intent.getStringExtra(EXTRA_SERVER_PLATFORM)
             val extra = intent.getStringExtra(EXTRA_SERVER_EXTRA)
+            val roomId = intent.getStringExtra(EXTRA_ROOM_ID)
             if (host != null && port != 0 && name != null) {
-                destinations.add(CastDestination(name, host, port, platform, extra = extra))
+                destinations.add(CastDestination(name, host, port, platform, extra = extra, roomId = roomId))
             } else if (platform == "DLNA" && host != null && name != null) {
-                destinations.add(CastDestination(name, host, 0, platform, extra = extra))
+                destinations.add(CastDestination(name, host, 0, platform, extra = extra, roomId = roomId))
             }
         }
         return destinations
@@ -1224,7 +1234,8 @@ class AudioCastService : Service() {
 
         while (currentCoroutineContext().isActive) {
             try {
-                client.webSocket(host = dest.host, port = dest.port, path = "/audio") audioSocket@{
+                val path = if (dest.roomId != null) "/audio?room_id=${dest.roomId}" else "/audio"
+                client.webSocket(host = dest.host, port = dest.port, path = path) audioSocket@{
                     reconnectAttempts = 0
                     PacketLogger.log(PacketDirection.OUT, PacketType.HANDSHAKE, "Audio socket connected to ${dest.name} (${dest.host}:${dest.port})")
 
@@ -1902,6 +1913,7 @@ class AudioCastService : Service() {
         const val EXTRA_SERVER_NAME = "com.aria.ariacast.EXTRA_SERVER_NAME"
         const val EXTRA_SERVER_PLATFORM = "com.aria.ariacast.EXTRA_SERVER_PLATFORM"
         const val EXTRA_SERVER_EXTRA = "com.aria.ariacast.EXTRA_SERVER_EXTRA"
+        const val EXTRA_ROOM_ID = "com.aria.ariacast.EXTRA_ROOM_ID"
         const val EXTRA_SERVERS_JSON = "com.aria.ariacast.EXTRA_SERVERS_JSON"
 
         const val PREFS_NAME = "AriaCastPrefs"
