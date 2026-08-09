@@ -124,6 +124,7 @@
     <string name="tile_error">Fehler aufgetreten</string>
     <!-- Packet Log Activity -->
     <string name="packet_logs">Paketprotokolle</string>
+    <string name="packet_logs_desc">Detaillierte Netzwerk-Paketprotokolle zur Fehlerbehebung anzeigen</string>
     <string name="search_logs">Protokolle durchsuchen…</string>
     <string name="clear_logs">Protokolle löschen</string>
     <!-- Create Group Dialog -->

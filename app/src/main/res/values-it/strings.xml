@@ -54,7 +54,7 @@
     <string name="accent_orange">Arancione</string>
     <string name="accent_pink">Rosa</string>
     <string name="secret_logs_one_tap">Ancora un tap per accedere ai log segreti</string>
-    <string name="secret_logs_multiple_taps">Ancora %1$s per accedere ai log segreti...</string>
+    <string name="secret_logs_multiple_taps">Ancora %1$d tap per accedere ai log segreti...</string>
     <string name="server_cleared">Ultima connessione ripulita</string>
     <string name="appearance">Apparenza</string>
     <string name="accent_color">Colore di Accento</string>
@@ -124,6 +124,7 @@
     <string name="tile_error">C\'è un errore</string>
 
     <string name="packet_logs">Log dei pacchetti</string>
+    <string name="packet_logs_desc">Visualizza i log dettagliati dei pacchetti di rete per il debug</string>
     <string name="search_logs">Cerca Log</string>
     <string name="clear_logs">Pulisci i Log</string>
 

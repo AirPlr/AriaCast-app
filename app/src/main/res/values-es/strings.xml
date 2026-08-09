@@ -124,6 +124,7 @@
     <string name="tile_error">Ocurrió un error</string>
     <!-- Packet Log Activity -->
     <string name="packet_logs">Registros de paquetes</string>
+    <string name="packet_logs_desc">Ver registros detallados de paquetes de red para depuración</string>
     <string name="search_logs">Buscar en registros…</string>
     <string name="clear_logs">Purgar Bitácoras</string>
     <!-- Create Group Dialog -->

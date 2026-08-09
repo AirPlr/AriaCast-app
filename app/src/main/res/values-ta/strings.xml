@@ -107,6 +107,7 @@
     <string name="tile_casting">நடிப்பு…</string>
     <string name="tile_error">பிழை ஏற்பட்டது</string>
     <string name="packet_logs">பாக்கெட் பதிவுகள்</string>
+    <string name="packet_logs_desc">பிழைத்திருத்தத்திற்கான விரிவான பிணைய பாக்கெட் பதிவுகளைப் பார்க்கவும்</string>
     <string name="search_logs">பதிவுகளைத் தேடு…</string>
     <string name="clear_logs">பதிவுகளை அழிக்கவும்</string>
     <string name="create_speaker_group">பேச்சாளர் குழுவை உருவாக்கவும்</string>

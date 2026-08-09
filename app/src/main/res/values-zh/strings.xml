@@ -131,6 +131,7 @@
 
     <!-- Packet Log Activity -->
     <string name="packet_logs">数据包日志</string>
+    <string name="packet_logs_desc">查看用于调试的详细网络数据包日志</string>
     <string name="search_logs">搜索日志…</string>
     <string name="clear_logs">清除日志</string>
 

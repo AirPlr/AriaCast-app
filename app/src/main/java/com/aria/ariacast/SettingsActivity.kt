@@ -114,6 +114,10 @@ class SettingsActivity : AppCompatActivity() {
             openGitHub()
         }
 
+        findViewById<View>(R.id.packetLogLayout).setOnClickListener {
+            startActivity(Intent(this, PacketLogActivity::class.java))
+        }
+
         findViewById<View>(R.id.resetServerLayout).setOnClickListener {
             resetLastServer()
         }
@@ -239,10 +243,12 @@ class SettingsActivity : AppCompatActivity() {
             "Français",
             "Italiano",
             "Nederlands",
+            "Polski",
+            "தமிழ்",
             "日本語",
             "简体中文"
         )
-        val codes = arrayOf("", "en", "de", "es", "fr", "it", "nl", "ja", "zh")
+        val codes = arrayOf("", "en", "de", "es", "fr", "it", "nl", "pl", "ta", "ja", "zh")
 
         val currentLocaleCode = AppCompatDelegate.getApplicationLocales().get(0)?.language ?: ""
         val checkedItem = codes.indexOf(currentLocaleCode).coerceAtLeast(0)
@@ -297,6 +303,8 @@ class SettingsActivity : AppCompatActivity() {
             "fr" -> "Français"
             "it" -> "Italiano"
             "nl" -> "Nederlands"
+            "pl" -> "Polski"
+            "ta" -> "தமிழ்"
             "ja" -> "日本語"
             "zh" -> "简体中文"
             else -> getString(R.string.language_default)

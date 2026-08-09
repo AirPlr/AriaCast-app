@@ -114,6 +114,7 @@
     <string name="tile_casting">Przesyłanie…</string>
     <string name="tile_error">Powstał błąd</string>
     <string name="packet_logs">Dzienniki pakietów</string>
+    <string name="packet_logs_desc">Wyświetl szczegółowe dzienniki pakietów sieciowych do debugowania</string>
     <string name="search_logs">Przeszukaj dzienniki…</string>
     <string name="clear_logs">Wyczyść dzienniki</string>
     <string name="create_speaker_group">Utwórz grupę głośników</string>

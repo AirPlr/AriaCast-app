@@ -1,8 +1,8 @@
 <resources>
     <string name="app_name" translatable="false">AriaCast</string>
-    <string name="app_version" translatable="false">1.1.6</string>
+    <string name="app_version" translatable="false">1.1.7</string>
     <string name="tile_label" translatable="false">AriaCast</string>
-    <string name="ver" translatable="false">AriaCast 1.1.6</string>
+    <string name="ver" translatable="false">AriaCast 1.1.7</string>
 
     <!-- Update Manager -->
     <string name="update_available_title">New Update Available</string>
@@ -142,6 +142,7 @@
 
     <!-- Packet Log Activity -->
     <string name="packet_logs">Packet Logs</string>
+    <string name="packet_logs_desc">View detailed network packet logs for debugging</string>
     <string name="search_logs">Search logs…</string>
     <string name="clear_logs">Clear Logs</string>
 
