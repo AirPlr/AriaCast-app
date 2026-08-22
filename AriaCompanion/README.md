@@ -194,6 +194,22 @@ DELETE http://<board-ip>:8081/api/receiver
 Stops streaming and forgets the selected receiver.
 
 ```
+POST http://<board-ip>:8081/api/metadata
+Content-Type: application/json
+
+{"data": {"title": "...", "artist": "...", "album": "...", "artworkUrl": "...", "durationMs": 123456, "positionMs": 4200, "isPlaying": true}}
+```
+The board doesn't parse this at all — the app sends the exact same JSON body
+it would otherwise POST directly to a receiver's own `/metadata` endpoint, so
+the board just caches it and forwards it verbatim to
+`http://<receiver-ip>:<receiver-port>/metadata`. AriaCast calls this
+automatically whenever Now Playing info changes (it works independently of
+the audio path, since it comes from Android's notification listener, not
+from captured audio). The cached copy is also re-sent automatically the
+moment a receiver is set via `POST /api/receiver`, so the receiver gets Now
+Playing info immediately instead of waiting for the next track change.
+
+```
 POST http://<board-ip>:8081/api/wifi/reset
 ```
 Clears the saved WiFi credentials and reboots into the `AriaCast-Setup`

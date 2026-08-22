@@ -8,6 +8,9 @@
 //   GET  /api/status              -> stato corrente (JSON)
 //   POST /api/receiver            -> body {"host":"...", "port":12889}
 //   DELETE /api/receiver          -> deseleziona il receiver (stop streaming)
+//   POST /api/metadata            -> body: lo stesso JSON che l'app manderebbe
+//                                     a POST /metadata sul receiver; viene
+//                                     inoltrato così com'è al receiver attuale
 //   POST /api/wifi/reset          -> cancella le credenziali WiFi e riavvia
 //                                     in modalità AP di configurazione
 

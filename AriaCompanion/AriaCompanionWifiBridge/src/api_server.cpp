@@ -1,6 +1,7 @@
 #include "api_server.h"
 #include "config_store.h"
 #include "aria_sender.h"
+#include "metadata_relay.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -76,6 +77,10 @@ static void handleSetReceiver() {
 
     configStore.saveReceiver(host, port);
     ariaSenderSetTarget(host, port);
+    // Il receiver è appena cambiato (o è la prima volta): dagli subito le
+    // info Now Playing che avevamo in cache, senza aspettare il prossimo
+    // cambio traccia dall'app.
+    metadataRelayResendTo(host, port);
 
     JsonDocument resp;
     resp["host"] = host;
@@ -84,6 +89,22 @@ static void handleSetReceiver() {
     String out;
     serializeJson(resp, out);
     server.send(200, "application/json", out);
+}
+
+static void handleSetMetadata() {
+    sendCors();
+
+    if (server.method() != HTTP_POST) {
+        server.send(405, "application/json", "{\"error\":\"method not allowed\"}");
+        return;
+    }
+
+    // Nessun parsing: l'app manda già l'esatto corpo JSON da girare al
+    // receiver, ci limitiamo a metterlo in cache e inoltrarlo.
+    String body = server.arg("plain");
+    metadataRelaySet(body, configStore.cfg.receiverHost, configStore.cfg.receiverPort);
+
+    server.send(200, "application/json", "{\"ok\":true}");
 }
 
 static void handleDeleteReceiver() {
@@ -108,6 +129,9 @@ void apiServerBegin() {
     server.on("/api/receiver", HTTP_POST, handleSetReceiver);
     server.on("/api/receiver", HTTP_DELETE, handleDeleteReceiver);
     server.on("/api/receiver", HTTP_OPTIONS, handleOptions);
+
+    server.on("/api/metadata", HTTP_POST, handleSetMetadata);
+    server.on("/api/metadata", HTTP_OPTIONS, handleOptions);
 
     server.on("/api/wifi/reset", HTTP_POST, handleWifiReset);
     server.on("/api/wifi/reset", HTTP_OPTIONS, handleOptions);

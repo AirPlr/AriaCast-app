@@ -405,16 +405,22 @@ class AudioCastService : Service() {
             return
         }
 
-        sessionScope.launch { startCompanionRelay(companionIp, companionPort, receiver) }
+        // Set before launching so performMetadataUpdate already routes
+        // through the board for the initial send below and the refresh loop.
+        companionApiHost = companionIp
+        companionApiPort = companionPort
+
+        sessionScope.launch {
+            startMetadataRefreshLoop()
+            _metadata.value?.let { sendMetadata(it) }
+            startCompanionRelay(companionIp, companionPort, receiver)
+        }
     }
 
     private var companionApiHost: String? = null
     private var companionApiPort: Int = 0
 
     private suspend fun startCompanionRelay(apiHost: String, apiPort: Int, receiver: CastDestination) {
-        companionApiHost = apiHost
-        companionApiPort = apiPort
-
         val pointed = withContext(Dispatchers.IO) {
             setCompanionReceiverTarget(apiHost, apiPort, receiver.host, receiver.port)
         }
@@ -1541,7 +1547,30 @@ class AudioCastService : Service() {
                 finalMetadata = metadata.copy(artworkUrl = "http://$myIp:$ARTWORK_PORT/artwork.jpg")
             }
         }
-        
+
+        val companionHost = companionApiHost
+        if (companionHost != null) {
+            // AriaCompanion: the ESP32 board owns the connection to the
+            // receiver, so relay metadata through its REST API instead of
+            // posting straight to the receiver like the branches below do.
+            try {
+                client.post {
+                    url {
+                        protocol = URLProtocol.HTTP
+                        host = companionHost
+                        port = companionApiPort
+                        path("api", "metadata")
+                    }
+                    contentType(ContentType.Application.Json)
+                    setBody(mapOf("data" to finalMetadata))
+                    timeout { requestTimeoutMillis = 5000 }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Companion: metadata relay failed: ${e.message}")
+            }
+            return
+        }
+
         val metadataKey = "${finalMetadata.title}-${finalMetadata.artist}"
 
         destinations.forEach { dest ->
