@@ -11,19 +11,25 @@ unofficial or sideloaded apps. This flag silently blocks Android's
 Official Play Store apps are exempt. There is no software workaround at the
 AriaCast level.
 
-AriaCompanion solves this by moving audio capture off the phone entirely:
+AriaCompanion solves this by moving audio capture off the phone entirely —
+and by not routing the audio back through the phone at all:
 
 ```
-Phone Bluetooth → ESP32 (BT sink) → I2S → ESP32 (WiFi sender) → WebSocket → AriaCast → Cast destination
+Phone Bluetooth → ESP32 (BT sink) → I2S → ESP32 (WiFi sender) → WebSocket → AriaCast Receiver
 ```
 
 Your phone plays audio to AriaCompanion as a Bluetooth A2DP sink. One ESP32
 decodes it and hands the raw PCM to a second ESP32 over I2S. That second
-board then pushes the audio to AriaCast using AriaCast's own native protocol
-(the same WebSocket protocol AriaCast uses to cast to a dedicated AriaCast
-Receiver) — AriaCompanion connects **to** the phone, not the other way
-around. AriaCast then forwards the audio to any cast target (AirPlay, RAOP,
-DLNA, etc.) exactly as it would with captured system audio.
+board then pushes the audio **directly** to an AriaCast Receiver of your
+choice, using AriaCast's own native WebSocket protocol — the exact same
+protocol AriaCast itself uses when casting to that receiver. The AriaCast
+app is only involved in setup and target selection: you pick a receiver in
+the app, the app tells the WiFi sender board (over its REST API) to connect
+there, and from then on audio flows straight from AriaCompanion to the
+receiver. **The phone is never in the audio path, and AriaCast never acts as
+a receiver itself** — because the board only speaks AriaCast's native
+protocol, this only works with a real AriaCast Receiver, not AirPlay, DLNA,
+or Google Cast targets.
 
 ---
 
@@ -130,12 +136,12 @@ your phone, open **Bluetooth settings**, scan for new devices, and select
    (or enter its IP manually if mDNS doesn't work on your router)
 3. Enable **Use as Audio Source**
 
-From now on, when you tap Cast in AriaCast, it will:
-1. Start AriaCast's own local receiver and tell the WiFi sender board (via
-   its REST API) to connect there
-2. Accept the incoming AriaCast stream from AriaCompanion instead of
-   capturing system audio
-3. Forward it to your selected cast target as usual
+With AriaCompanion enabled, AriaCast's main destination list only shows
+**AriaCast Receiver** devices — that's the only protocol the WiFi sender
+board speaks, so AirPlay/DLNA/Google Cast targets are hidden while it's
+active. Tap the receiver you want; AriaCast tells the WiFi sender board
+(via its REST API) to connect there, and the board streams straight to it.
+The app just relays that one instruction — no audio passes through it.
 
 ---
 
@@ -157,7 +163,8 @@ hiss more noticeable.
 
 The WiFi sender board does no discovery of its own — that stays the app's
 job (it already speaks AriaCast's own discovery protocols). This API just
-receives the host/port the app has chosen for its local receiver.
+receives the host/port of the AriaCast Receiver the app (or you) picked;
+the board then connects there itself.
 
 ```
 GET http://<board-ip>:8081/api/status
@@ -178,8 +185,8 @@ Content-Type: application/json
 ```
 Saves the receiver to NVS (persists across reboots) and immediately starts a
 WebSocket connection to `/audio` on that host/port. AriaCast calls this
-automatically with its own IP when you enable AriaCompanion as an audio
-source — you never need to call it by hand.
+automatically with the AriaCast Receiver's IP when you pick it from the
+app's destination list — you never need to call it by hand.
 
 ```
 DELETE http://<board-ip>:8081/api/receiver
@@ -208,11 +215,11 @@ JSON `{"status":"READY"}` handshake), not a bespoke raw-TCP format:
 | Channels | 2 (stereo) |
 | Bit depth | 16-bit signed, little-endian |
 | Frame size | 3840 bytes (20 ms), one frame every 20 ms |
-| Transport | WebSocket, AriaCompanion connects out to AriaCast |
+| Transport | WebSocket, AriaCompanion connects out to the AriaCast Receiver |
 
 Because the BT sink board already resamples everything to 48 kHz before it
-ever reaches I2S, AriaCast needs no resampling step for AriaCompanion audio —
-it's the same rate/format AriaCast uses internally everywhere else.
+ever reaches I2S, the receiver gets exactly the rate/format AriaCast uses
+internally everywhere else — no resampling needed on either end.
 
 ---
 

@@ -187,28 +187,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchCompanionCast() {
+        // AriaCompanion's ESP32 board only speaks AriaCast's native protocol
+        // directly to a receiver, so only those destinations are usable here
+        // even if a multiroom group snuck in an AirPlay/DLNA/Google Cast host.
+        val ariaCastServers = selectedServers.filter { it.platform == "AriaCast" }
+        val target = ariaCastServers.firstOrNull()
+        if (target == null) {
+            Toast.makeText(this, getString(R.string.companion_needs_ariacast_receiver), Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val serviceIntent = Intent(this, AudioCastService::class.java).apply {
             action = AudioCastService.ACTION_START_COMPANION
-            if (selectedServers.size == 1) {
-                val s = selectedServers[0]
-                putExtra(AudioCastService.EXTRA_SERVER_HOST, s.host)
-                putExtra(AudioCastService.EXTRA_SERVER_PORT, s.port)
-                putExtra(AudioCastService.EXTRA_SERVER_NAME, s.name)
-                putExtra(AudioCastService.EXTRA_SERVER_PLATFORM, s.platform)
-                putExtra(AudioCastService.EXTRA_SERVER_EXTRA, s.extra)
-            } else {
-                val array = org.json.JSONArray()
-                selectedServers.forEach { s ->
-                    array.put(org.json.JSONObject().apply {
-                        put("name", s.name)
-                        put("host", s.host)
-                        put("port", s.port)
-                        put("platform", s.platform)
-                        put("extra", s.extra)
-                    })
-                }
-                putExtra(AudioCastService.EXTRA_SERVERS_JSON, array.toString())
-            }
+            putExtra(AudioCastService.EXTRA_SERVER_HOST, target.host)
+            putExtra(AudioCastService.EXTRA_SERVER_PORT, target.port)
+            putExtra(AudioCastService.EXTRA_SERVER_NAME, target.name)
+            putExtra(AudioCastService.EXTRA_SERVER_PLATFORM, target.platform)
+            putExtra(AudioCastService.EXTRA_SERVER_EXTRA, target.extra)
         }
         ContextCompat.startForegroundService(this, serviceIntent)
     }
@@ -318,7 +313,17 @@ class MainActivity : AppCompatActivity() {
             combine(discoveryManager.servers, _audioCastServiceFlow, _refreshTrigger) { servers, service, _ ->
                 Pair(servers, service)
             }.collectLatest { (servers, service) ->
-                serverListAdapter.submitList(servers)
+                // AriaCompanion (the ESP32 bridge) only speaks AriaCast's own
+                // native protocol directly to a receiver — it can't reach
+                // AirPlay/DLNA/Google Cast destinations — so while it's the
+                // active audio source, only show receivers it can actually use.
+                val companionEnabled = sharedPreferences.getBoolean(AriaCompanionActivity.KEY_COMPANION_ENABLED, false)
+                val displayedServers = if (companionEnabled) {
+                    servers.filter { it.platform == "AriaCast" }
+                } else {
+                    servers
+                }
+                serverListAdapter.submitList(displayedServers)
 
                 val isMultiroomEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_MULTIROOM_ENABLED, false)
                 if (isMultiroomEnabled) {
@@ -335,16 +340,16 @@ class MainActivity : AppCompatActivity() {
                 val lastHost = sharedPreferences.getString(AudioCastService.KEY_LAST_SERVER_HOST, null)
                 
                 if (isUserSelecting && selectedServers.size == 1) {
-                    val found = servers.find { it.host == selectedServers[0].host }
+                    val found = displayedServers.find { it.host == selectedServers[0].host }
                     if (found != null) {
                         selectedServers = listOf(found)
-                        serverListAdapter.setSelectedItem(servers.indexOf(found))
+                        serverListAdapter.setSelectedItem(displayedServers.indexOf(found))
                     }
                 } else if (lastHost != null && selectedServers.isEmpty()) {
-                    val lastServer = servers.find { it.host == lastHost }
+                    val lastServer = displayedServers.find { it.host == lastHost }
                     if (lastServer != null) {
                         selectedServers = listOf(lastServer)
-                        serverListAdapter.setSelectedItem(servers.indexOf(lastServer))
+                        serverListAdapter.setSelectedItem(displayedServers.indexOf(lastServer))
                     }
                 }
                 

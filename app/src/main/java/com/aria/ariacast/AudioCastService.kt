@@ -348,10 +348,24 @@ class AudioCastService : Service() {
         return destinations
     }
 
+    // AriaCompanion streams straight from the ESP32 WiFi sender board to a
+    // real AriaCast Receiver (native protocol only — that's all the board
+    // speaks); the phone is never in the audio path. This service's only
+    // job is to point the board at the chosen receiver via its REST API.
     @SuppressLint("MissingPermission")
     private fun startCastingWithCompanion(destinations: List<CastDestination>) {
+        val receiver = destinations.firstOrNull()
+        if (receiver == null) {
+            Log.e(TAG, "No AriaCast receiver selected for AriaCompanion")
+            _state.value = CastState.ERROR
+            return
+        }
+        if (destinations.size > 1) {
+            Log.w(TAG, "AriaCompanion streams to a single receiver; ignoring ${destinations.size - 1} extra destination(s)")
+        }
+
         sessionJob?.cancel()
-        _activeDestinations.value = destinations
+        _activeDestinations.value = listOf(receiver)
         _state.value = CastState.CONNECTING
         sessionJob = SupervisorJob()
         val sessionScope = CoroutineScope(Dispatchers.IO + sessionJob!!)
@@ -359,13 +373,11 @@ class AudioCastService : Service() {
         originalVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
 
-        if (destinations.size == 1) {
-            with(sharedPreferences.edit()) {
-                putString(KEY_LAST_SERVER_HOST, destinations[0].host)
-                putInt(KEY_LAST_SERVER_PORT, destinations[0].port)
-                putString(KEY_LAST_SERVER_NAME, destinations[0].name)
-                apply()
-            }
+        with(sharedPreferences.edit()) {
+            putString(KEY_LAST_SERVER_HOST, receiver.host)
+            putInt(KEY_LAST_SERVER_PORT, receiver.port)
+            putString(KEY_LAST_SERVER_NAME, receiver.name)
+            apply()
         }
 
         try {
@@ -393,70 +405,63 @@ class AudioCastService : Service() {
             return
         }
 
-        sessionScope.launch {
-            if (destinations.any { it.platform == "DLNA" || it.platform == "Google Cast" || it.platform == "AirPlay" }) {
-                startDlnaHttpServer()
-                startArtworkServer()
-            }
-
-            launch { startCompanionAudioCapture(companionIp, companionPort) }
-
-            destinations.forEach { dest ->
-                when (dest.platform) {
-                    "DLNA" -> launch { startDlnaSession(dest) }
-                    "Google Cast" -> launch { startGoogleCastSession(dest) }
-                    "AirPlay" -> launch { startAirPlaySession(dest) }
-                    "AirPlay2" -> launch { startAirPlay2Session(dest) }
-                    else -> {
-                        launch { startControlSession(dest) }
-                        launch { startAudioSession(dest) }
-                        launch { startStatsSession(dest) }
-                    }
-                }
-            }
-
-            startMetadataRefreshLoop()
-            _metadata.value?.let { sendMetadata(it) }
-        }
+        sessionScope.launch { startCompanionRelay(companionIp, companionPort, receiver) }
     }
 
-    private var companionReceiverServer: CompanionReceiverServer? = null
     private var companionApiHost: String? = null
     private var companionApiPort: Int = 0
 
-    private suspend fun startCompanionAudioCapture(apiHost: String, apiPort: Int) {
-        val myIp = getLocalIpAddress()
-        if (myIp == null) {
-            Log.e(TAG, "Companion: could not determine local IP address")
-            _state.value = CastState.ERROR
-            return
-        }
-
+    private suspend fun startCompanionRelay(apiHost: String, apiPort: Int, receiver: CastDestination) {
         companionApiHost = apiHost
         companionApiPort = apiPort
 
-        val receiver = CompanionReceiverServer(COMPANION_RECEIVER_PORT) { frame ->
-            _audioBufferFlow.emit(frame)
+        val pointed = withContext(Dispatchers.IO) {
+            setCompanionReceiverTarget(apiHost, apiPort, receiver.host, receiver.port)
         }
-        companionReceiverServer = receiver
-        receiver.start(scope)
-
-        val registered = withContext(Dispatchers.IO) {
-            setCompanionReceiverTarget(apiHost, apiPort, myIp, COMPANION_RECEIVER_PORT)
-        }
-        if (!registered) {
+        if (!pointed) {
             Log.e(TAG, "Companion: failed to reach AriaCompanion REST API at $apiHost:$apiPort")
             _state.value = CastState.ERROR
-            receiver.stop()
-            companionReceiverServer = null
             return
         }
 
-        _state.value = CastState.CASTING
-        updateNotification()
-        // The actual audio flows through CompanionReceiverServer's callback above;
-        // just stay alive until the session is cancelled so cleanup runs below.
-        awaitCancellation()
+        Log.i(TAG, "Companion: told $apiHost:$apiPort to stream to ${receiver.host}:${receiver.port}")
+
+        // The board now streams directly to the receiver on its own; poll its
+        // status just to reflect the real connection state in the app instead
+        // of optimistically showing CASTING the instant the REST call succeeds.
+        var consecutiveFailures = 0
+        while (currentCoroutineContext().isActive) {
+            val boardState = withContext(Dispatchers.IO) { fetchCompanionReceiverState(apiHost, apiPort) }
+            if (boardState != null) {
+                consecutiveFailures = 0
+                _state.value = if (boardState == "streaming") CastState.CASTING else CastState.CONNECTING
+                updateNotification()
+            } else {
+                consecutiveFailures++
+                if (consecutiveFailures >= 3) {
+                    Log.e(TAG, "Companion: lost contact with $apiHost:$apiPort")
+                    _state.value = CastState.ERROR
+                    updateNotification()
+                }
+            }
+            delay(3000)
+        }
+    }
+
+    private fun fetchCompanionReceiverState(apiHost: String, apiPort: Int): String? {
+        return try {
+            val url = URL("http://$apiHost:$apiPort/api/status")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 3000
+                readTimeout = 3000
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            JSONObject(body).optJSONObject("receiver")?.optString("state")
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun setCompanionReceiverTarget(apiHost: String, apiPort: Int, receiverHost: String, receiverPort: Int): Boolean {
@@ -1847,8 +1852,6 @@ class AudioCastService : Service() {
         try { artworkServerSocket?.close() } catch (e: Exception) {}
         artworkServerSocket = null
 
-        companionReceiverServer?.stop()
-        companionReceiverServer = null
         companionApiHost?.let { host ->
             val port = companionApiPort
             scope.launch(Dispatchers.IO) { clearCompanionReceiverTarget(host, port) }
@@ -1976,13 +1979,10 @@ class AudioCastService : Service() {
         const val FRAME_SIZE = 3840
         const val LATENCY = 66150
         // REST API port on the AriaCompanion WiFi sender board (renamed from
-        // the old raw-TCP COMPANION_STREAM_PORT=7001 now that AriaCompanion
-        // pushes audio via AriaCast's own WebSocket protocol instead).
+        // the old raw-TCP COMPANION_STREAM_PORT=7001 now that the board
+        // streams straight to a chosen AriaCast Receiver instead of to a
+        // bespoke TCP port on the phone).
         const val COMPANION_API_PORT = 8081
-        // Port this app listens on to receive that WebSocket stream, passed
-        // to the board via POST /api/receiver. Matches the AriaCast native
-        // protocol's default receiver port.
-        private const val COMPANION_RECEIVER_PORT = 12889
         private const val AP2_ALAC_FRAME_SIZE = 352  // ALAC frame size in samples for AirPlay 2
         
         const val VIDEO_WIDTH = 1280
