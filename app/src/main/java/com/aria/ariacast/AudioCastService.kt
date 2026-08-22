@@ -436,16 +436,25 @@ class AudioCastService : Service() {
         // status just to reflect the real connection state in the app instead
         // of optimistically showing CASTING the instant the REST call succeeds.
         var consecutiveFailures = 0
+        var lastLoggedState: String? = null
         while (currentCoroutineContext().isActive) {
             val boardState = withContext(Dispatchers.IO) { fetchCompanionReceiverState(apiHost, apiPort) }
             if (boardState != null) {
+                if (consecutiveFailures > 0) {
+                    PacketLogger.log(PacketDirection.IN, PacketType.STATS, "AriaCompanion contact restored ($apiHost:$apiPort)")
+                }
                 consecutiveFailures = 0
+                if (boardState != lastLoggedState) {
+                    PacketLogger.log(PacketDirection.IN, PacketType.STATS, "AriaCompanion state: $boardState")
+                    lastLoggedState = boardState
+                }
                 _state.value = if (boardState == "streaming") CastState.CASTING else CastState.CONNECTING
                 updateNotification()
             } else {
                 consecutiveFailures++
-                if (consecutiveFailures >= 3) {
+                if (consecutiveFailures == 3) {
                     Log.e(TAG, "Companion: lost contact with $apiHost:$apiPort")
+                    PacketLogger.log(PacketDirection.IN, PacketType.STATS, "Lost contact with AriaCompanion ($apiHost:$apiPort)")
                     _state.value = CastState.ERROR
                     updateNotification()
                 }
@@ -485,11 +494,18 @@ class AudioCastService : Service() {
                 setRequestProperty("Content-Type", "application/json")
             }
             OutputStreamWriter(conn.outputStream).use { it.write(body) }
-            val ok = conn.responseCode == 200
+            val responseCode = conn.responseCode
             conn.disconnect()
+            val ok = responseCode == 200
+            if (ok) {
+                PacketLogger.log(PacketDirection.OUT, PacketType.HANDSHAKE, "AriaCompanion ($apiHost:$apiPort) told to stream to $receiverHost:$receiverPort")
+            } else {
+                PacketLogger.log(PacketDirection.IN, PacketType.HANDSHAKE, "AriaCompanion setReceiver returned HTTP $responseCode")
+            }
             ok
         } catch (e: Exception) {
             Log.e(TAG, "Companion: setReceiver failed: ${e.message}")
+            PacketLogger.log(PacketDirection.IN, PacketType.HANDSHAKE, "AriaCompanion setReceiver failed: ${e.message ?: e.javaClass.simpleName}")
             false
         }
     }
@@ -504,8 +520,10 @@ class AudioCastService : Service() {
             }
             conn.responseCode
             conn.disconnect()
+            PacketLogger.log(PacketDirection.OUT, PacketType.HANDSHAKE, "AriaCompanion ($apiHost:$apiPort) receiver cleared")
         } catch (e: Exception) {
             Log.w(TAG, "Companion: clearReceiver failed: ${e.message}")
+            PacketLogger.log(PacketDirection.IN, PacketType.HANDSHAKE, "AriaCompanion clearReceiver failed: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -1565,8 +1583,10 @@ class AudioCastService : Service() {
                     setBody(mapOf("data" to finalMetadata))
                     timeout { requestTimeoutMillis = 5000 }
                 }
+                PacketLogger.log(PacketDirection.OUT, PacketType.METADATA, "Metadata relayed via AriaCompanion ($companionHost:$companionApiPort)")
             } catch (e: Exception) {
                 Log.w(TAG, "Companion: metadata relay failed: ${e.message}")
+                PacketLogger.log(PacketDirection.OUT, PacketType.METADATA, "Metadata relay to AriaCompanion failed: ${e.message ?: e.javaClass.simpleName}")
             }
             return
         }
@@ -1587,6 +1607,7 @@ class AudioCastService : Service() {
                         setBody(mapOf("data" to finalMetadata))
                         timeout { requestTimeoutMillis = 5000 }
                     }
+                    PacketLogger.log(PacketDirection.OUT, PacketType.METADATA, "Metadata sent to ${dest.name}")
                 } else if (dest.platform == "AirPlay") {
                     updateRaopMetadata(dest.host, finalMetadata)
                     if (dest.port != 5000) updateAirPlay2Metadata(dest.host, finalMetadata)
