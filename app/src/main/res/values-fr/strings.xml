@@ -159,7 +159,7 @@
     <string name="companion_manual_ip_desc">Saisissez directement l\'adresse IP de l\'ESP32</string>
     <string name="companion_manual_ip_hint">192.168.1.x</string>
     <string name="companion_setup">Configuration initiale</string>
-    <string name="companion_setup_desc">Connectez votre téléphone au réseau Wi-Fi « AriaCompanion-XXXX » diffusé par l\'ESP32, puis saisissez ci-dessous les identifiants de votre Wi-Fi domestique.</string>
+    <string name="companion_setup_desc">Connectez votre téléphone au réseau Wi-Fi « AriaCast-Setup » diffusé par l\'ESP32, puis saisissez ci-dessous les identifiants de votre Wi-Fi domestique.</string>
     <string name="companion_wifi_ssid">SSID du Wi-Fi domestique</string>
     <string name="companion_wifi_pass">Mot de passe du Wi-Fi domestique</string>
     <string name="companion_configure">Configurer et connecter</string>

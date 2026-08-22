@@ -141,7 +141,7 @@
     <string name="companion_manual_ip_desc">Introduzca directamente la dirección IP ESP32</string>
     <string name="companion_manual_ip_hint">192.168.1.x</string>
     <string name="companion_setup">Configuración por primera vez</string>
-    <string name="companion_setup_desc">Conecte su teléfono a la red WiFi AriaCompanion‐XXXX que los broadcasts ESP32, entonces introduzca sus credenciales Wi-Fi de casa a continuación.</string>
+    <string name="companion_setup_desc">Conecte su teléfono a la red WiFi AriaCast-Setup que los broadcasts ESP32, entonces introduzca sus credenciales Wi-Fi de casa a continuación.</string>
     <string name="companion">AriaCompanion</string>
     <string name="companion_device">Dispositivo de acompañante</string>
     <string name="companion_status_searching">Búsqueda para AriaCompanion…</string>

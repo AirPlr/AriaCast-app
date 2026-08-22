@@ -61,10 +61,13 @@ import com.aria.ariacast.raop.AudioResampler
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -382,7 +385,7 @@ class AudioCastService : Service() {
         }
 
         val companionIp = sharedPreferences.getString(AriaCompanionActivity.KEY_COMPANION_IP, null)
-        val companionPort = sharedPreferences.getInt(AriaCompanionActivity.KEY_COMPANION_PORT, COMPANION_STREAM_PORT)
+        val companionPort = sharedPreferences.getInt(AriaCompanionActivity.KEY_COMPANION_PORT, COMPANION_API_PORT)
 
         if (companionIp.isNullOrEmpty()) {
             Log.e(TAG, "No companion IP configured")
@@ -417,29 +420,81 @@ class AudioCastService : Service() {
         }
     }
 
-    private suspend fun startCompanionAudioCapture(ip: String, port: Int) {
-        // Companion sends 44100 Hz stereo 16-bit LE; upsample to SAMPLE_RATE (48000) before emitting.
-        val resampler = com.aria.ariacast.raop.AudioResampler(l = 160, m = 147, channels = 2)
-        val frameBuffer = ByteArray(COMPANION_FRAME_SIZE)
-        try {
-            java.net.Socket(ip, port).use { socket ->
-                socket.soTimeout = 5000
-                val input = socket.getInputStream()
-                _state.value = CastState.CASTING
-                updateNotification()
-                while (currentCoroutineContext().isActive) {
-                    var totalRead = 0
-                    while (totalRead < COMPANION_FRAME_SIZE) {
-                        val n = input.read(frameBuffer, totalRead, COMPANION_FRAME_SIZE - totalRead)
-                        if (n == -1) throw java.io.EOFException("Companion disconnected")
-                        totalRead += n
-                    }
-                    _audioBufferFlow.emit(resampler.resample(frameBuffer))
-                }
+    private var companionReceiverServer: CompanionReceiverServer? = null
+    private var companionApiHost: String? = null
+    private var companionApiPort: Int = 0
+
+    private suspend fun startCompanionAudioCapture(apiHost: String, apiPort: Int) {
+        val myIp = getLocalIpAddress()
+        if (myIp == null) {
+            Log.e(TAG, "Companion: could not determine local IP address")
+            _state.value = CastState.ERROR
+            return
+        }
+
+        companionApiHost = apiHost
+        companionApiPort = apiPort
+
+        val receiver = CompanionReceiverServer(COMPANION_RECEIVER_PORT) { frame ->
+            _audioBufferFlow.emit(frame)
+        }
+        companionReceiverServer = receiver
+        receiver.start(scope)
+
+        val registered = withContext(Dispatchers.IO) {
+            setCompanionReceiverTarget(apiHost, apiPort, myIp, COMPANION_RECEIVER_PORT)
+        }
+        if (!registered) {
+            Log.e(TAG, "Companion: failed to reach AriaCompanion REST API at $apiHost:$apiPort")
+            _state.value = CastState.ERROR
+            receiver.stop()
+            companionReceiverServer = null
+            return
+        }
+
+        _state.value = CastState.CASTING
+        updateNotification()
+        // The actual audio flows through CompanionReceiverServer's callback above;
+        // just stay alive until the session is cancelled so cleanup runs below.
+        awaitCancellation()
+    }
+
+    private fun setCompanionReceiverTarget(apiHost: String, apiPort: Int, receiverHost: String, receiverPort: Int): Boolean {
+        return try {
+            val url = URL("http://$apiHost:$apiPort/api/receiver")
+            val body = JSONObject().apply {
+                put("host", receiverHost)
+                put("port", receiverPort)
+            }.toString()
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty("Content-Type", "application/json")
             }
+            OutputStreamWriter(conn.outputStream).use { it.write(body) }
+            val ok = conn.responseCode == 200
+            conn.disconnect()
+            ok
         } catch (e: Exception) {
-            Log.e(TAG, "Companion audio capture ended: ${e.message}")
-            if (currentCoroutineContext().isActive) _state.value = CastState.ERROR
+            Log.e(TAG, "Companion: setReceiver failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun clearCompanionReceiverTarget(apiHost: String, apiPort: Int) {
+        try {
+            val url = URL("http://$apiHost:$apiPort/api/receiver")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "DELETE"
+                connectTimeout = 3000
+                readTimeout = 3000
+            }
+            conn.responseCode
+            conn.disconnect()
+        } catch (e: Exception) {
+            Log.w(TAG, "Companion: clearReceiver failed: ${e.message}")
         }
     }
 
@@ -1791,7 +1846,15 @@ class AudioCastService : Service() {
         streamServerSocket = null
         try { artworkServerSocket?.close() } catch (e: Exception) {}
         artworkServerSocket = null
-        
+
+        companionReceiverServer?.stop()
+        companionReceiverServer = null
+        companionApiHost?.let { host ->
+            val port = companionApiPort
+            scope.launch(Dispatchers.IO) { clearCompanionReceiverTarget(host, port) }
+        }
+        companionApiHost = null
+
         controlSessions.clear()
         raopSockets.values.forEach { try { it.close() } catch (e: Exception) {} }
         raopSockets.clear()
@@ -1912,10 +1975,14 @@ class AudioCastService : Service() {
         const val SAMPLE_RATE = 48000
         const val FRAME_SIZE = 3840
         const val LATENCY = 66150
-        const val COMPANION_STREAM_PORT = 7001
-        private const val COMPANION_SAMPLE_RATE = 44100
-        // 20 ms frame at 44100 Hz stereo 16-bit
-        private const val COMPANION_FRAME_SIZE = 3528
+        // REST API port on the AriaCompanion WiFi sender board (renamed from
+        // the old raw-TCP COMPANION_STREAM_PORT=7001 now that AriaCompanion
+        // pushes audio via AriaCast's own WebSocket protocol instead).
+        const val COMPANION_API_PORT = 8081
+        // Port this app listens on to receive that WebSocket stream, passed
+        // to the board via POST /api/receiver. Matches the AriaCast native
+        // protocol's default receiver port.
+        private const val COMPANION_RECEIVER_PORT = 12889
         private const val AP2_ALAC_FRAME_SIZE = 352  // ALAC frame size in samples for AirPlay 2
         
         const val VIDEO_WIDTH = 1280

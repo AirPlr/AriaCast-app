@@ -98,7 +98,7 @@ class AriaCompanionActivity : AppCompatActivity() {
 
         val savedIp = prefs.getString(KEY_COMPANION_IP, null)
         if (!savedIp.isNullOrEmpty()) {
-            val savedPort = prefs.getInt(KEY_COMPANION_PORT, AudioCastService.COMPANION_STREAM_PORT)
+            val savedPort = prefs.getInt(KEY_COMPANION_PORT, AudioCastService.COMPANION_API_PORT)
             statusTitle.text = getString(R.string.companion_status_found, "AriaCompanion", "$savedIp:$savedPort")
             statusSubtitle.text = savedIp
             statusIcon.setImageResource(android.R.drawable.presence_online)
@@ -174,7 +174,7 @@ class AriaCompanionActivity : AppCompatActivity() {
                 if (ip.isNotEmpty()) {
                     prefs.edit()
                         .putString(KEY_COMPANION_IP, ip)
-                        .putInt(KEY_COMPANION_PORT, AudioCastService.COMPANION_STREAM_PORT)
+                        .putInt(KEY_COMPANION_PORT, AudioCastService.COMPANION_API_PORT)
                         .apply()
                     statusTitle.text = getString(R.string.companion_status_found, "AriaCompanion", ip)
                     statusSubtitle.text = ip
@@ -197,7 +197,7 @@ class AriaCompanionActivity : AppCompatActivity() {
                         cm.getNetworkCapabilities(network)
                             ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
                     }
-                    val url = URL("http://192.168.4.1/wifi")
+                    val url = URL("http://192.168.4.1/save")
                     val body = "ssid=${URLEncoder.encode(ssid, "UTF-8")}&pass=${URLEncoder.encode(pass, "UTF-8")}"
                     val conn = (wifiNetwork?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
                     conn.apply {
