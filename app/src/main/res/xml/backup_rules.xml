@@ -1,13 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Legacy Auto Backup config (android:fullBackupContent), consulted only below API 31 -
+   this app's minSdk is 31 so it's effectively unused today, but kept in sync with
+   data_extraction_rules.xml in case that ever changes. See its comment for why
+   AriaCastSecurePrefs is excluded.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="sharedpref" path="AriaCastSecurePrefs.xml" />
 </full-backup-content>

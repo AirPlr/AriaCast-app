@@ -46,8 +46,13 @@ class SRP6aClient(
         val salt = parsed[TlvUtil.TLV_SALT]?.firstOrNull() ?: return null
         val serverB = parsed[TlvUtil.TLV_PUBLIC_KEY]?.firstOrNull() ?: return null
         if (salt.size != 16) return null
+        val bValue = BigInteger(1, serverB)
+        // RFC 5054 §3.1: abort if B mod N == 0 - a malicious/compromised peer could pick
+        // a degenerate B to make the shared secret predictable and bypass proof of
+        // knowledge of the password.
+        if (bValue.mod(N) == BigInteger.ZERO) return null
         this.salt = salt
-        this.B = BigInteger(1, serverB)
+        this.B = bValue
         return buildM3(salt, serverB)
     }
 

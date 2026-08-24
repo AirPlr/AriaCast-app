@@ -120,9 +120,16 @@ class PluginsActivity : AppCompatActivity() {
     private fun syncAndRefresh() {
         lifecycleScope.launch {
             Toast.makeText(this@PluginsActivity, getString(R.string.syncing_plugins), Toast.LENGTH_SHORT).show()
-            val success = pluginManager.syncPluginsFromGitHub()
-            if (success) {
+            val result = pluginManager.syncPluginsFromGitHub()
+            if (result.success) {
                 Toast.makeText(this@PluginsActivity, getString(R.string.plugins_synced), Toast.LENGTH_SHORT).show()
+                if (result.disabledPluginNames.isNotEmpty()) {
+                    MaterialAlertDialogBuilder(this@PluginsActivity)
+                        .setTitle(getString(R.string.plugins_updated_disabled_title))
+                        .setMessage(getString(R.string.plugins_updated_disabled_message, result.disabledPluginNames.joinToString(", ")))
+                        .setPositiveButton(getString(R.string.ok), null)
+                        .show()
+                }
             } else {
                 Toast.makeText(this@PluginsActivity, getString(R.string.sync_failed), Toast.LENGTH_SHORT).show()
             }

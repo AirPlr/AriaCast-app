@@ -7,8 +7,15 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing secrets live in keystore.properties, a git-ignored file at the repo
+// root (see .gitignore) - never in gradle.properties, which is tracked in version
+// control. Populate it locally (or via CI secrets) with:
+//   MYAPP_RELEASE_STORE_FILE=/path/to/release.keystore
+//   MYAPP_RELEASE_STORE_PASSWORD=...
+//   MYAPP_RELEASE_KEY_ALIAS=...
+//   MYAPP_RELEASE_KEY_PASSWORD=...
 val keystoreProperties = Properties()
-val keystorePropertiesFile = rootProject.file("gradle.properties")
+val keystorePropertiesFile = rootProject.file("keystore.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
@@ -41,7 +48,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

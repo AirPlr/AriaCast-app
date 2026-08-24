@@ -169,9 +169,9 @@ class DiscoveryManager(private val context: Context) {
             platform = "Google Cast"
             name = attrString("fn") ?: name
             model = attrString("md")
-            attrString("st")?.let { extraParts.add("st=$it") }
-            attrString("ca")?.let { extraParts.add("ca=$it") }
-            attrString("ve")?.let { extraParts.add("ve=$it") }
+            attrString("st")?.let { extraParts.add(ExtraFields.encode("st", it)) }
+            attrString("ca")?.let { extraParts.add(ExtraFields.encode("ca", it)) }
+            attrString("ve")?.let { extraParts.add(ExtraFields.encode("ve", it)) }
         } else if (serviceInfo.serviceType.contains("_audiocast")) {
             platform = "AriaCast"
         }
@@ -181,10 +181,10 @@ class DiscoveryManager(private val context: Context) {
             name = originalName
         }
 
-        if (model != null) extraParts.add("model=$model")
-        if (deviceId != null) extraParts.add("id=$deviceId")
-        if (features != null) extraParts.add("features=$features")
-        if (pk != null) extraParts.add("pk=$pk")
+        if (model != null) extraParts.add(ExtraFields.encode("model", model))
+        if (deviceId != null) extraParts.add(ExtraFields.encode("id", deviceId))
+        if (features != null) extraParts.add(ExtraFields.encode("features", features))
+        if (pk != null) extraParts.add(ExtraFields.encode("pk", pk))
 
         val server = Server(
             name = name,
@@ -199,23 +199,33 @@ class DiscoveryManager(private val context: Context) {
         )
         
         synchronized(discoveredServers) {
-            val existing = discoveredServers[name]
+            // A different device advertising the same friendly name must not silently
+            // take over an already-discovered entry's host - that's exactly how mDNS
+            // name spoofing would redirect a user who trusts a familiar name into
+            // casting to an attacker's box instead. Key it separately and disambiguate
+            // the display name so both stay visible rather than one clobbering the other.
+            val existingSameName = discoveredServers[name]
+            val spoofedName = existingSameName != null && existingSameName.host != hostAddress
+            val key = if (spoofedName) "$name@$hostAddress" else name
+            val candidate = if (spoofedName) server.copy(name = "$name ($hostAddress)") else server
+
+            val existing = discoveredServers[key]
             if (existing != null && existing.platform == platform) {
                 if (platform == "AirPlay" || platform == "AirPlay2") {
                     val isRaop = serviceInfo.serviceType.contains("_raop")
-                    discoveredServers[name] = if (isRaop) {
-                        server.copy(extra = mergeExtras(existing.extra, server.extra))
+                    discoveredServers[key] = if (isRaop) {
+                        candidate.copy(extra = mergeExtras(existing.extra, candidate.extra))
                     } else {
                         existing.copy(
-                            extra = mergeExtras(existing.extra, server.extra),
-                            version = if (server.version != "1.0") server.version else existing.version
+                            extra = mergeExtras(existing.extra, candidate.extra),
+                            version = if (candidate.version != "1.0") candidate.version else existing.version
                         )
                     }
                 } else {
-                    discoveredServers[name] = server
+                    discoveredServers[key] = candidate
                 }
             } else {
-                discoveredServers[name] = server
+                discoveredServers[key] = candidate
             }
             _servers.value = discoveredServers.values.toList()
             if (_state.value != DiscoveryState.SCANNING) {
@@ -227,9 +237,8 @@ class DiscoveryManager(private val context: Context) {
     private fun mergeExtras(old: String?, new: String?): String? {
         if (old == null) return new
         if (new == null) return old
-        val oldMap = old.split(";").filter { it.contains("=") }.associate { it.substringBefore("=") to it.substringAfter("=") }
-        val newMap = new.split(";").filter { it.contains("=") }.associate { it.substringBefore("=") to it.substringAfter("=") }
-        return (oldMap + newMap).map { "${it.key}=${it.value}" }.joinToString(";")
+        val merged = ExtraFields.parse(old) + ExtraFields.parse(new)
+        return ExtraFields.join(merged.toList())
     }
 
     fun startDiscovery() {
@@ -247,9 +256,11 @@ class DiscoveryManager(private val context: Context) {
         val prefs = context.getSharedPreferences("AriaCastPrefs", Context.MODE_PRIVATE)
         val services = mutableListOf("_audiocast._tcp")
         val airplayEnabled = prefs.getBoolean("airplay_enabled", false)
-        if (airplayEnabled) {
+        val airplay2Enabled = prefs.getBoolean("airplay2_enabled", false)
+        if (airplay2Enabled) {
             services.add("_airplay._tcp")
-            
+        }
+        if (airplayEnabled) {
             raopDiscovery = RaopDiscovery(context)
             raopDiscovery?.start { device ->
                 val server = Server(
@@ -392,33 +403,37 @@ class DiscoveryManager(private val context: Context) {
 
     private suspend fun resolveDlnaDevice(location: String, hostAddress: String) = withContext(Dispatchers.IO) {
         try {
-            val connection = java.net.URL(location).openConnection() as java.net.HttpURLConnection
+            val locationUri = java.net.URI(location)
+            val scheme = locationUri.scheme?.lowercase()
+            if (scheme != "http" && scheme != "https") return@withContext
+            // The LOCATION header is attacker-controllable by anything on the LAN that can
+            // send an SSDP reply. Requiring it to point back at the address the UDP reply
+            // actually came from stops it being used to make this device fetch an arbitrary
+            // internal URL (SSRF) instead of the description of the device that just replied.
+            if (locationUri.host == null || locationUri.host != hostAddress) return@withContext
+
+            val connection = locationUri.toURL().openConnection() as java.net.HttpURLConnection
             connection.connectTimeout = 3000
-            val xml = connection.inputStream.bufferedReader().use { it.readText() }
+            connection.readTimeout = 3000
+            val xml = connection.inputStream.use { readBounded(it, MAX_DEVICE_DESCRIPTION_BYTES) }
             val friendlyName = xml.substringAfter("<friendlyName>", "").substringBefore("</friendlyName>")
             
             if (friendlyName.isNotEmpty()) {
                 var avTransportUrl = ""
                 if (xml.contains("urn:schemas-upnp-org:service:AVTransport:1")) {
-                    avTransportUrl = xml.substringAfter("urn:schemas-upnp-org:service:AVTransport:1").substringAfter("<controlURL>", "").substringBefore("</controlURL>")
-                    if (avTransportUrl.isNotEmpty() && !avTransportUrl.startsWith("http")) {
-                        val uri = java.net.URI(location)
-                        avTransportUrl = "${uri.scheme}://${uri.host}:${uri.port}${if(avTransportUrl.startsWith("/")) "" else "/"}$avTransportUrl"
-                    }
+                    val raw = xml.substringAfter("urn:schemas-upnp-org:service:AVTransport:1").substringAfter("<controlURL>", "").substringBefore("</controlURL>")
+                    avTransportUrl = resolveTrustedControlUrl(raw, locationUri, hostAddress) ?: ""
                 }
 
                 var renderingControlUrl = ""
                 if (xml.contains("urn:schemas-upnp-org:service:RenderingControl:1")) {
-                    renderingControlUrl = xml.substringAfter("urn:schemas-upnp-org:service:RenderingControl:1").substringAfter("<controlURL>", "").substringBefore("</controlURL>")
-                    if (renderingControlUrl.isNotEmpty() && !renderingControlUrl.startsWith("http")) {
-                        val uri = java.net.URI(location)
-                        renderingControlUrl = "${uri.scheme}://${uri.host}:${uri.port}${if(renderingControlUrl.startsWith("/")) "" else "/"}$renderingControlUrl"
-                    }
+                    val raw = xml.substringAfter("urn:schemas-upnp-org:service:RenderingControl:1").substringAfter("<controlURL>", "").substringBefore("</controlURL>")
+                    renderingControlUrl = resolveTrustedControlUrl(raw, locationUri, hostAddress) ?: ""
                 }
-                
+
                 val extraParts = mutableListOf<String>()
-                if (avTransportUrl.isNotEmpty()) extraParts.add("av_control=$avTransportUrl")
-                if (renderingControlUrl.isNotEmpty()) extraParts.add("rc_control=$renderingControlUrl")
+                if (avTransportUrl.isNotEmpty()) extraParts.add(ExtraFields.encode("av_control", avTransportUrl))
+                if (renderingControlUrl.isNotEmpty()) extraParts.add(ExtraFields.encode("rc_control", renderingControlUrl))
 
                 val server = Server(
                     name = friendlyName,
@@ -432,7 +447,12 @@ class DiscoveryManager(private val context: Context) {
                     extra = if (extraParts.isEmpty()) null else extraParts.joinToString(";")
                 )
                 synchronized(discoveredServers) {
-                    discoveredServers[friendlyName] = server
+                    val existing = discoveredServers[friendlyName]
+                    if (existing != null && existing.host != hostAddress) {
+                        discoveredServers["$friendlyName@$hostAddress"] = server.copy(name = "$friendlyName ($hostAddress)")
+                    } else {
+                        discoveredServers[friendlyName] = server
+                    }
                     _servers.value = discoveredServers.values.toList()
                     if (_state.value != DiscoveryState.SCANNING) {
                         _state.value = DiscoveryState.FOUND
@@ -456,6 +476,12 @@ class DiscoveryManager(private val context: Context) {
                         val resp = DatagramPacket(buffer, buffer.size)
                         try {
                             socket.receive(resp)
+                        } catch (e: Exception) {
+                            // Timeout (expected once the window elapses) or a socket-level
+                            // error - either way there's nothing more to receive right now.
+                            break
+                        }
+                        try {
                             val json = JSONObject(String(resp.data, 0, resp.length))
                             val server = Server(name = json.optString("server_name"), host = resp.address.hostAddress ?: "", port = json.optInt("port"), version = "1.0", codecs = listOf("pcm"), sampleRate = 48000, channels = 2, platform = "AriaCast")
                             synchronized(discoveredServers) {
@@ -465,7 +491,11 @@ class DiscoveryManager(private val context: Context) {
                                     _state.value = DiscoveryState.FOUND
                                 }
                             }
-                        } catch (e: Exception) { break }
+                        } catch (e: Exception) {
+                            // Malformed reply from one sender - ignore just this packet and
+                            // keep listening for the rest of the window instead of ending
+                            // the whole scan early on a single bad/spoofed reply.
+                        }
                     }
                 }
             } catch (e: Exception) {}
@@ -473,7 +503,41 @@ class DiscoveryManager(private val context: Context) {
         }
     }
 
-    companion object { private const val TAG = "DiscoveryManager" }
+    /**
+     * Resolves a UPnP <controlURL> value against the (already host-validated) device
+     * description location. A relative path is joined onto that location as usual. An
+     * absolute URL is only accepted if it points back at the same host that answered
+     * the SSDP query - otherwise the device description itself could redirect SOAP
+     * control requests to an arbitrary third-party host/port (confused-deputy SSRF),
+     * so it's dropped instead of trusted.
+     */
+    private fun resolveTrustedControlUrl(raw: String, locationUri: java.net.URI, expectedHost: String): String? {
+        if (raw.isEmpty()) return null
+        if (!raw.startsWith("http://", ignoreCase = true) && !raw.startsWith("https://", ignoreCase = true)) {
+            return "${locationUri.scheme}://${locationUri.host}:${locationUri.port}${if (raw.startsWith("/")) "" else "/"}$raw"
+        }
+        val uri = try { java.net.URI(raw) } catch (e: Exception) { return null }
+        return if (uri.host == expectedHost) raw else null
+    }
+
+    /** Reads at most [maxBytes] from [input] as UTF-8 text, so a malicious/misbehaving
+     *  device can't hang discovery by streaming an unbounded response body. */
+    private fun readBounded(input: java.io.InputStream, maxBytes: Int): String {
+        val buffer = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(4096)
+        while (buffer.size() < maxBytes) {
+            val toRead = minOf(chunk.size, maxBytes - buffer.size())
+            val read = input.read(chunk, 0, toRead)
+            if (read < 0) break
+            buffer.write(chunk, 0, read)
+        }
+        return buffer.toString("UTF-8")
+    }
+
+    companion object {
+        private const val TAG = "DiscoveryManager"
+        private const val MAX_DEVICE_DESCRIPTION_BYTES = 262_144
+    }
 }
 
 enum class DiscoveryState { IDLE, SCANNING, FOUND, NONE }

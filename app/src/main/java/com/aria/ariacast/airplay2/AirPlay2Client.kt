@@ -680,6 +680,14 @@ class AirPlay2Client(
         }
     }
 
+    /** Best-effort graceful session end. Call before [close] where possible so the
+     *  receiver drops the session immediately instead of waiting out its own timeout. */
+    fun teardown() {
+        try {
+            if (sessionUrl.isNotEmpty()) sendRtspRequest("TEARDOWN", sessionUrl, null, null)
+        } catch (_: Exception) {}
+    }
+
     fun close() {
         running = false
         syncThread?.interrupt()
