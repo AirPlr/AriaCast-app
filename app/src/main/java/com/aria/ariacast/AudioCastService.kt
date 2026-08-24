@@ -232,6 +232,15 @@ class AudioCastService : Service() {
         
         startMetadataWorker()
         startArtworkServer()
+
+        // A failed connection attempt (many possible paths - wrong port, device offline,
+        // handshake rejected) is just as terminal for a deep-link-joined Wi-Fi network as
+        // an explicit stop is (see cleanupSession's isFinalStop) - nothing legitimately
+        // "continues" from CastState.ERROR, so release unconditionally here rather than
+        // threading isFinalStop through every error branch that sets this state.
+        scope.launch {
+            _state.collect { if (it == CastState.ERROR) WifiJoinManager.release(this@AudioCastService) }
+        }
     }
 
     private fun startMetadataWorker() {
@@ -1954,13 +1963,22 @@ class AudioCastService : Service() {
     }
 
     private fun stopCasting() {
-        cleanupSession()
+        cleanupSession(isFinalStop = true)
         @Suppress("DEPRECATION")
         stopForeground(true)
         stopSelf()
     }
 
-    private fun cleanupSession() {
+    /**
+     * [isFinalStop] distinguishes a real "casting is ending" stop (ACTION_STOP) from the
+     * cleanup ACTION_START/ACTION_START_COMPANION run first to clear out a prior session
+     * before starting a new one. That matters for releasing a deep-link-joined Wi-Fi
+     * network (see WifiJoinManager): a new session's join happens in MainActivity before
+     * its start intent is even sent, so if this cleanup unconditionally released it, a
+     * quick "switch network and cast again" would tear down the network it just joined
+     * out from under the incoming session. Only a genuinely final stop releases it.
+     */
+    private fun cleanupSession(isFinalStop: Boolean = false) {
         val destinations = _activeDestinations.value.toList()
         val teardownJobs = stopRemoteSessions(destinations)
 
@@ -2013,6 +2031,7 @@ class AudioCastService : Service() {
             withTimeoutOrNull(2000) { teardownJobs.joinAll() }
             raopSocketsSnapshot.forEach { try { it.close() } catch (e: Exception) {} }
             ap2ClientsSnapshot.forEach { try { it.close() } catch (e: Exception) {} }
+            if (isFinalStop) WifiJoinManager.release(this@AudioCastService)
         }
         _activeDestinations.value = emptyList()
         sessionJob?.cancel()

@@ -43,8 +43,10 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -238,10 +240,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Handles ariacast://<host>[:<port>][?type=<type>&name=<name>] links (e.g. from an NFC
-     * tag). type defaults to "ariacast" (AriaCast's own protocol) when omitted, matching
-     * a bare `ariacast://host` link. Tapping the same link again while already casting to
-     * that host stops casting instead of restarting it.
+     * Handles ariacast://<host>[:<port>][?type=<type>&name=<name>][&ssid=<ssid>&pass=<pass>]
+     * links (e.g. from an NFC tag). type defaults to "ariacast" (AriaCast's own protocol)
+     * when omitted, matching a bare `ariacast://host` link. Tapping the same link again
+     * while already casting to that host stops casting instead of restarting it.
+     *
+     * ssid/pass ask the phone to join that Wi-Fi network first - e.g. a tag that should
+     * both switch the phone onto the receiver's network and start casting to it. That has
+     * to happen before anything else here: discovery (mDNS/SSDP) can't find a device on a
+     * network the phone isn't on yet, so a wifi-joining link skips discovery-based
+     * resolution entirely and connects directly using the target's default port.
      */
     private fun handleDeepLink(intent: Intent?) {
         if (intent == null || intent.action != Intent.ACTION_VIEW) return
@@ -260,6 +268,7 @@ class MainActivity : AppCompatActivity() {
         val platform = platformForDeepLinkType(uri.getQueryParameter("type"))
         val name = uri.getQueryParameter("name")
         val label = name ?: host
+        val ssid = uri.getQueryParameter("ssid")
 
         lifecycleScope.launch {
             val service = waitForServiceConnection()
@@ -272,7 +281,15 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
 
-            val target = resolveDeepLinkTarget(host, requestedPort, platform, name)
+            if (!ssid.isNullOrEmpty()) {
+                val joined = joinDeepLinkWifi(ssid, uri.getQueryParameter("pass") ?: "")
+                if (!joined) {
+                    Toast.makeText(this@MainActivity, getString(R.string.deep_link_wifi_failed, ssid), Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+            }
+
+            val target = resolveDeepLinkTarget(host, requestedPort, platform, name, skipDiscovery = !ssid.isNullOrEmpty())
             if (target == null) {
                 Toast.makeText(this@MainActivity, getString(R.string.deep_link_not_found, label), Toast.LENGTH_LONG).show()
                 return@launch
@@ -290,14 +307,40 @@ class MainActivity : AppCompatActivity() {
         return audioCastService
     }
 
+    /** Suspends until WifiJoinManager reports the join succeeded or failed. AudioCastService
+     *  releases the network again once casting actually stops (see cleanupSession()). */
+    private suspend fun joinDeepLinkWifi(ssid: String, password: String): Boolean =
+        suspendCancellableCoroutine { cont ->
+            WifiJoinManager.join(this, ssid, password) { joined ->
+                if (cont.isActive) cont.resume(joined)
+            }
+        }
+
     /**
-     * Resolves a deep link into a full [Server]. An already-discovered device is always
-     * preferred - it carries metadata a blind connection can't (the AriaCast platform's
-     * receiver-assigned port, DLNA's SSDP-sourced control URLs, an AirPlay 2 device's
-     * pairing key) - falling back to a direct connection using the protocol's well-known
-     * default port only for AirPlay/AirPlay2/Google Cast, where that's enough on its own.
+     * Resolves a deep link into a full [Server]. Normally an already-discovered device is
+     * preferred - it carries metadata a blind connection can't (DLNA's SSDP-sourced control
+     * URLs, an AirPlay 2 device's pairing key) - falling back to a direct connection using
+     * the platform's well-known default port. When [skipDiscovery] is set (a Wi-Fi-joining
+     * link), discovery is skipped entirely and this only ever returns a direct connection.
      */
-    private suspend fun resolveDeepLinkTarget(host: String, requestedPort: Int, platform: String, name: String?): Server? {
+    private suspend fun resolveDeepLinkTarget(host: String, requestedPort: Int, platform: String, name: String?, skipDiscovery: Boolean = false): Server? {
+        fun directConnect(): Server? {
+            val blindPort = if (requestedPort > 0) requestedPort else defaultPortForDeepLinkPlatform(platform)
+            if (blindPort <= 0) return null
+            return Server(
+                name = name ?: host,
+                host = host,
+                port = blindPort,
+                version = "1.0",
+                codecs = listOf("pcm"),
+                sampleRate = 48000,
+                channels = 2,
+                platform = platform
+            )
+        }
+
+        if (skipDiscovery) return directConnect()
+
         fun findMatch(): Server? {
             val servers = discoveryManager.servers.value
             if (!name.isNullOrEmpty()) {
@@ -315,18 +358,7 @@ class MainActivity : AppCompatActivity() {
             findMatch()?.let { return it }
         }
 
-        val blindPort = if (requestedPort > 0) requestedPort else defaultPortForDeepLinkPlatform(platform)
-        if (blindPort <= 0) return null
-        return Server(
-            name = name ?: host,
-            host = host,
-            port = blindPort,
-            version = "1.0",
-            codecs = listOf("pcm"),
-            sampleRate = 48000,
-            channels = 2,
-            platform = platform
-        )
+        return directConnect()
     }
 
     private fun platformForDeepLinkType(type: String?): String = when (type?.lowercase()) {
@@ -338,10 +370,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun defaultPortForDeepLinkPlatform(platform: String): Int = when (platform) {
+        "AriaCast" -> 12889
         "AirPlay" -> 5000
         "AirPlay2" -> 7000
         "Google Cast" -> 8008
-        else -> 0 // AriaCast's port is receiver-assigned; DLNA needs SSDP-sourced control URLs.
+        else -> 0 // DLNA needs SSDP-sourced control URLs - can't be reached blind.
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

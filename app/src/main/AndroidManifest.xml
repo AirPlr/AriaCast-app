@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- For WifiNetworkSpecifier (see WifiJoinManager) - joining a specific Wi-Fi network
+         by SSID/password from an ariacast:// deep link. Normal-level, no runtime prompt. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />

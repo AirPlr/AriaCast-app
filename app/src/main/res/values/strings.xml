@@ -24,6 +24,7 @@
     <string name="open_notification_settings">Open Settings</string>
     <string name="select_server_first">Please select a server first.</string>
     <string name="deep_link_invalid">That AriaCast link is missing a device address</string>
+    <string name="deep_link_wifi_failed">Couldn\'t join Wi-Fi network %1$s</string>
     <string name="deep_link_not_found">Couldn\'t find %1$s on your network</string>
     <string name="deep_link_casting">Casting to %1$s (%2$s)</string>
     <string name="deep_link_stopping">Stopped casting to %1$s</string>
