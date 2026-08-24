@@ -23,6 +23,10 @@
     <string name="notification_access_required_message">This isn\'t just for showing track info: some receivers (like the Music Assistant AriaCast Receiver) only start playback once AriaCast tells them playback has started, and that signal is sent through Notification Access. Without it, casting can look connected and audio can be sent, but nothing will actually play.\n\nIf Android shows \"This setting is currently unavailable\" or \"Restricted setting\", go to Settings → Apps → AriaCast, tap the ⋮ menu in the top right, and choose \"Allow restricted settings\" — this is required for apps installed outside the Play Store. Then try enabling it again.</string>
     <string name="open_notification_settings">Open Settings</string>
     <string name="select_server_first">Please select a server first.</string>
+    <string name="deep_link_invalid">That AriaCast link is missing a device address</string>
+    <string name="deep_link_not_found">Couldn\'t find %1$s on your network</string>
+    <string name="deep_link_casting">Casting to %1$s (%2$s)</string>
+    <string name="deep_link_stopping">Stopped casting to %1$s</string>
     <string name="scanning">Scanning…</string>
     <string name="refresh">Refresh</string>
     <string name="stop">Stop</string>

@@ -56,11 +56,21 @@
 
         <activity
             android:name="com.aria.ariacast.MainActivity"
+            android:launchMode="singleTask"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- ariacast://<host>[:<port>][?type=airplay|airplay2|dlna|googlecast&name=...]
+                 starts (or, tapped again while already active, stops) casting to a device -
+                 see MainActivity.handleDeepLink(). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ariacast" />
             </intent-filter>
         </activity>
 

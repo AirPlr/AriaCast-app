@@ -44,6 +44,7 @@ import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -236,6 +237,113 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.startForegroundService(this, serviceIntent)
     }
 
+    /**
+     * Handles ariacast://<host>[:<port>][?type=<type>&name=<name>] links (e.g. from an NFC
+     * tag). type defaults to "ariacast" (AriaCast's own protocol) when omitted, matching
+     * a bare `ariacast://host` link. Tapping the same link again while already casting to
+     * that host stops casting instead of restarting it.
+     */
+    private fun handleDeepLink(intent: Intent?) {
+        if (intent == null || intent.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        if (uri.scheme?.equals("ariacast", ignoreCase = true) != true) return
+        // Consume it so a later onCreate/onNewIntent replay (e.g. a config change) doesn't
+        // re-trigger the same cast/stop action a second time.
+        intent.data = null
+
+        val host = uri.host
+        if (host.isNullOrEmpty()) {
+            Toast.makeText(this, getString(R.string.deep_link_invalid), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val requestedPort = uri.port // -1 when not specified
+        val platform = platformForDeepLinkType(uri.getQueryParameter("type"))
+        val name = uri.getQueryParameter("name")
+        val label = name ?: host
+
+        lifecycleScope.launch {
+            val service = waitForServiceConnection()
+            val activeHost = service?.activeDestinations?.value?.firstOrNull()?.host
+            if (service?.state?.value == CastState.CASTING && activeHost == host) {
+                Toast.makeText(this@MainActivity, getString(R.string.deep_link_stopping, label), Toast.LENGTH_SHORT).show()
+                startService(Intent(this@MainActivity, AudioCastService::class.java).apply {
+                    action = AudioCastService.ACTION_STOP
+                })
+                return@launch
+            }
+
+            val target = resolveDeepLinkTarget(host, requestedPort, platform, name)
+            if (target == null) {
+                Toast.makeText(this@MainActivity, getString(R.string.deep_link_not_found, label), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+
+            Toast.makeText(this@MainActivity, getString(R.string.deep_link_casting, target.name, target.host), Toast.LENGTH_SHORT).show()
+            isUserSelecting = true
+            castToServers(listOf(target))
+        }
+    }
+
+    private suspend fun waitForServiceConnection(timeoutMs: Long = 3000): AudioCastService? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (audioCastService == null && System.currentTimeMillis() < deadline) delay(100)
+        return audioCastService
+    }
+
+    /**
+     * Resolves a deep link into a full [Server]. An already-discovered device is always
+     * preferred - it carries metadata a blind connection can't (the AriaCast platform's
+     * receiver-assigned port, DLNA's SSDP-sourced control URLs, an AirPlay 2 device's
+     * pairing key) - falling back to a direct connection using the protocol's well-known
+     * default port only for AirPlay/AirPlay2/Google Cast, where that's enough on its own.
+     */
+    private suspend fun resolveDeepLinkTarget(host: String, requestedPort: Int, platform: String, name: String?): Server? {
+        fun findMatch(): Server? {
+            val servers = discoveryManager.servers.value
+            if (!name.isNullOrEmpty()) {
+                servers.find { it.name.equals(name, ignoreCase = true) && it.platform == platform }?.let { return it }
+            }
+            return servers.find { it.host == host && it.platform == platform }
+        }
+
+        findMatch()?.let { return it }
+
+        // Give discovery (already running from onStart()) a short window to find it.
+        val deadline = System.currentTimeMillis() + 6000
+        while (System.currentTimeMillis() < deadline) {
+            delay(400)
+            findMatch()?.let { return it }
+        }
+
+        val blindPort = if (requestedPort > 0) requestedPort else defaultPortForDeepLinkPlatform(platform)
+        if (blindPort <= 0) return null
+        return Server(
+            name = name ?: host,
+            host = host,
+            port = blindPort,
+            version = "1.0",
+            codecs = listOf("pcm"),
+            sampleRate = 48000,
+            channels = 2,
+            platform = platform
+        )
+    }
+
+    private fun platformForDeepLinkType(type: String?): String = when (type?.lowercase()) {
+        "airplay" -> "AirPlay"
+        "airplay2" -> "AirPlay2"
+        "dlna" -> "DLNA"
+        "googlecast", "google_cast", "google-cast" -> "Google Cast"
+        else -> "AriaCast"
+    }
+
+    private fun defaultPortForDeepLinkPlatform(platform: String): Int = when (platform) {
+        "AirPlay" -> 5000
+        "AirPlay2" -> 7000
+        "Google Cast" -> 8008
+        else -> 0 // AriaCast's port is receiver-assigned; DLNA needs SSDP-sourced control URLs.
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         sharedPreferences = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
         currentAccentColor = sharedPreferences.getInt(SettingsActivity.KEY_ACCENT_COLOR, R.color.accent_blue)
@@ -409,6 +517,14 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             updateManager.checkForUpdates(manual = false)
         }
+
+        handleDeepLink(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
     }
 
     private fun updateSyncUi() {
