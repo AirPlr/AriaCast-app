@@ -198,7 +198,6 @@
     <string name="write_nfc_tag_desc">Create a tag that starts casting to a device when tapped</string>
 
     <!-- NFC Tag Writer -->
-    <string name="nfc_write_device_section">Device</string>
     <string name="nfc_write_host_hint">Host or IP address</string>
     <string name="nfc_write_port_hint">Port (optional)</string>
     <string name="nfc_write_type_label">Protocol</string>

@@ -13,14 +13,23 @@ import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.os.Build
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
+import android.widget.ImageButton
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import java.io.IOException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * Writes an ariacast://<host>[:<port>][?type=...&name=...][&ssid=...&pass=...] link to a
@@ -38,7 +47,12 @@ class NfcWriteActivity : AppCompatActivity() {
     private lateinit var wifiFieldsContainer: View
     private lateinit var ssidInput: TextInputEditText
     private lateinit var passInput: TextInputEditText
-    private lateinit var statusText: android.widget.TextView
+    private lateinit var statusText: TextView
+    private lateinit var discoveredStatusText: TextView
+    private lateinit var discoveredRecyclerView: RecyclerView
+    private lateinit var discoveredAdapter: DiscoveredDeviceAdapter
+    private lateinit var discoveryManager: DiscoveryManager
+    private var discoveryJob: Job? = null
 
     private var nfcAdapter: NfcAdapter? = null
 
@@ -73,6 +87,8 @@ class NfcWriteActivity : AppCompatActivity() {
         ssidInput = findViewById(R.id.ssidInput)
         passInput = findViewById(R.id.passInput)
         statusText = findViewById(R.id.statusText)
+        discoveredStatusText = findViewById(R.id.discoveredStatusText)
+        discoveredRecyclerView = findViewById(R.id.discoveredRecyclerView)
 
         typeInput.setAdapter(
             ArrayAdapter(this, android.R.layout.simple_list_item_1, protocolOptions.map { getString(it.labelRes) })
@@ -83,10 +99,56 @@ class NfcWriteActivity : AppCompatActivity() {
             wifiFieldsContainer.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
+        discoveryManager = DiscoveryManager(this)
+        discoveredAdapter = DiscoveredDeviceAdapter { server -> applyDiscoveredServer(server) }
+        discoveredRecyclerView.apply {
+            adapter = discoveredAdapter
+            layoutManager = LinearLayoutManager(this@NfcWriteActivity)
+        }
+
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
         if (nfcAdapter == null) {
             statusText.text = getString(R.string.nfc_not_available)
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        discoveryManager.startDiscovery()
+        discoveryJob = lifecycleScope.launch {
+            discoveryManager.servers.collect { servers ->
+                discoveredAdapter.submitList(servers)
+                discoveredStatusText.visibility = if (servers.isEmpty()) View.VISIBLE else View.GONE
+                discoveredRecyclerView.visibility = if (servers.isEmpty()) View.GONE else View.VISIBLE
+                if (servers.isEmpty()) discoveredStatusText.text = getString(R.string.scanning)
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        discoveryJob?.cancel()
+        discoveryJob = null
+        discoveryManager.stopDiscovery()
+    }
+
+    /** Prefills the manual-entry fields from an already-discovered device - the fields stay
+     *  editable afterward, e.g. to override the name before writing the tag. */
+    private fun applyDiscoveredServer(server: Server) {
+        hostInput.setText(server.host)
+        portInput.setText(server.port.toString())
+        nameInput.setText(server.name)
+        val typeKey = platformToTypeKey(server.platform)
+        val option = protocolOptions.firstOrNull { it.typeKey == typeKey } ?: protocolOptions[0]
+        typeInput.setText(getString(option.labelRes), false)
+    }
+
+    private fun platformToTypeKey(platform: String?): String? = when (platform) {
+        "AirPlay" -> "airplay"
+        "AirPlay2" -> "airplay2"
+        "DLNA" -> "dlna"
+        "Google Cast" -> "googlecast"
+        else -> null
     }
 
     override fun onResume() {
@@ -200,6 +262,39 @@ class NfcWriteActivity : AppCompatActivity() {
             statusText.text = getString(R.string.nfc_write_failed)
         } catch (e: FormatException) {
             statusText.text = getString(R.string.nfc_write_failed)
+        }
+    }
+
+    private class DiscoveredDeviceAdapter(
+        private val onClick: (Server) -> Unit
+    ) : RecyclerView.Adapter<DiscoveredDeviceAdapter.ViewHolder>() {
+
+        private var servers = emptyList<Server>()
+
+        fun submitList(newServers: List<Server>) {
+            servers = newServers
+            notifyDataSetChanged()
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_server, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val server = servers[position]
+            holder.serverName.text = server.name
+            holder.serverHost.text = if (server.platform != null) "${server.host} • ${server.platform}" else server.host
+            holder.moreButton.visibility = View.GONE
+            holder.itemView.setOnClickListener { onClick(server) }
+        }
+
+        override fun getItemCount() = servers.size
+
+        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val serverName: TextView = view.findViewById(R.id.serverName)
+            val serverHost: TextView = view.findViewById(R.id.serverHost)
+            val moreButton: ImageButton = view.findViewById(R.id.moreButton)
         }
     }
 }
