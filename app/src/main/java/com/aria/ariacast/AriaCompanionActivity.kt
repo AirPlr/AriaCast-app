@@ -18,11 +18,14 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import kotlin.coroutines.resume
 
 class AriaCompanionActivity : AppCompatActivity() {
 
@@ -54,12 +57,12 @@ class AriaCompanionActivity : AppCompatActivity() {
             isDiscovering = false
         }
         override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-            nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+            nsdManager.resolveServiceCompat(serviceInfo, mainExecutor, object : NsdManager.ResolveListener {
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                     Log.e(tag, "Resolve failed: $errorCode")
                 }
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                    val ip = serviceInfo.host?.hostAddress ?: return
+                    val ip = serviceInfo.hostAddressCompat ?: return
                     val port = serviceInfo.port
                     val name = serviceInfo.serviceName
                     Log.d(tag, "Companion found: $name @ $ip:$port")
@@ -193,10 +196,7 @@ class AriaCompanionActivity : AppCompatActivity() {
             val ok = withContext(Dispatchers.IO) {
                 try {
                     val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-                    val wifiNetwork = cm.allNetworks.firstOrNull { network ->
-                        cm.getNetworkCapabilities(network)
-                            ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
-                    }
+                    val wifiNetwork = findWifiNetwork(cm)
                     val url = URL("http://192.168.4.1/save")
                     val body = "ssid=${URLEncoder.encode(ssid, "UTF-8")}&pass=${URLEncoder.encode(pass, "UTF-8")}"
                     val conn = (wifiNetwork?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
@@ -221,6 +221,36 @@ class AriaCompanionActivity : AppCompatActivity() {
             ).show()
         }
     }
+
+    /**
+     * Finds a currently connected WiFi network so [sendWifiCredentials] can bind its
+     * request to it explicitly (the device's default route may prefer mobile data while
+     * WiFi is joined to the ESP32's internet-less AP). Replaces the deprecated
+     * [android.net.ConnectivityManager.getAllNetworks] with the callback-based lookup
+     * Android recommends in its place; returns null if no WiFi network shows up in time.
+     */
+    private suspend fun findWifiNetwork(cm: android.net.ConnectivityManager): android.net.Network? =
+        withTimeoutOrNull(2000) {
+            suspendCancellableCoroutine { cont ->
+                val request = android.net.NetworkRequest.Builder()
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    .build()
+                val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        cm.unregisterNetworkCallback(this)
+                        if (cont.isActive) cont.resume(network)
+                    }
+                }
+                cont.invokeOnCancellation {
+                    try { cm.unregisterNetworkCallback(callback) } catch (e: Exception) {}
+                }
+                try {
+                    cm.requestNetwork(request, callback)
+                } catch (e: Exception) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
+        }
 
     private fun hideKeyboard() {
         currentFocus?.let {

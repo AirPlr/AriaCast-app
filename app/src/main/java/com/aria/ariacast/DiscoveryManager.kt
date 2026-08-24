@@ -1,17 +1,18 @@
 package com.aria.ariacast
 
 import android.content.Context
+import android.net.InetAddresses
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.util.Log
-import android.util.Patterns
 import com.aria.ariacast.raop.RaopDiscovery
 import com.aria.ariacast.raop.RaopDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,7 @@ class DiscoveryManager(private val context: Context) {
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
+    private val resolveExecutor = Dispatchers.IO.asExecutor()
 
     private val _servers = MutableStateFlow<List<Server>>(emptyList())
     val servers: StateFlow<List<Server>> = _servers.asStateFlow()
@@ -98,7 +100,7 @@ class DiscoveryManager(private val context: Context) {
         activeResolves++
         
         try {
-            nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+            nsdManager.resolveServiceCompat(serviceInfo, resolveExecutor, object : NsdManager.ResolveListener {
                 override fun onResolveFailed(si: NsdServiceInfo, errorCode: Int) {
                     Log.e(TAG, "Resolve failed: $errorCode for ${si.serviceName}")
                     activeResolves--
@@ -128,7 +130,7 @@ class DiscoveryManager(private val context: Context) {
     private fun handleResolvedService(serviceInfo: NsdServiceInfo) {
         val originalName = serviceInfo.serviceName ?: return
         var name = originalName
-        val hostAddress = serviceInfo.host?.hostAddress ?: return
+        val hostAddress = serviceInfo.hostAddressCompat ?: return
         
         if (hostAddress == "127.0.0.1" || hostAddress == "::1" || hostAddress.contains("localhost")) return
 
@@ -342,7 +344,7 @@ class DiscoveryManager(private val context: Context) {
      * valid IP address, true once the server has been merged into [servers].
      */
     fun addManualServer(host: String, port: Int, name: String): Boolean {
-        if (!Patterns.IP_ADDRESS.matcher(host).matches()) {
+        if (!InetAddresses.isNumericAddress(host)) {
             Log.w(TAG, "addManualServer: invalid host '$host'")
             return false
         }

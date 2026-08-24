@@ -1,5 +1,6 @@
 package com.aria.ariacast
 
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -76,7 +77,15 @@ class AriaTileService : TileService() {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 // This will show the activity over the QS panel, user grants permission,
                 // and the activity will start the foreground service.
-                startActivityAndCollapse(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    val pendingIntent = PendingIntent.getActivity(
+                        this@AriaTileService, 0, intent, PendingIntent.FLAG_IMMUTABLE
+                    )
+                    startActivityAndCollapse(pendingIntent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    startActivityAndCollapse(intent)
+                }
             }
             // If the tile is active, casting is on. Tapping should stop it.
             Tile.STATE_ACTIVE -> {
