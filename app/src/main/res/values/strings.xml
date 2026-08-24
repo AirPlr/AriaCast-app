@@ -164,7 +164,7 @@
     <string name="companion_manual_ip_desc">Enter the ESP32 IP address directly</string>
     <string name="companion_manual_ip_hint">192.168.1.x</string>
     <string name="companion_setup">First-Time Setup</string>
-    <string name="companion_setup_desc">Connect your phone to the "AriaCompanion-XXXX" Wi-Fi network that the ESP32 broadcasts, then enter your home Wi-Fi credentials below.</string>
+    <string name="companion_setup_desc">Connect your phone to the "AriaCast-Setup" Wi-Fi network that the ESP32 WiFi sender board broadcasts, then enter your home Wi-Fi credentials below.</string>
     <string name="companion_wifi_ssid">Home Wi-Fi SSID</string>
     <string name="companion_wifi_pass">Home Wi-Fi Password</string>
     <string name="companion_configure">Configure &amp; Connect</string>
@@ -175,6 +175,7 @@
     <string name="companion_configure_ok">Credentials sent — ESP32 is restarting</string>
     <string name="companion_configure_fail">Could not reach ESP32 setup page</string>
     <string name="companion_ip_saved">IP saved: %1$s</string>
+    <string name="companion_needs_ariacast_receiver">Select an AriaCast receiver to stream to — AriaCompanion can\'t reach AirPlay, DLNA or Google Cast devices directly</string>
 
     <!-- AirPlay 2 Pairing -->
     <string name="airplay_pin_title">Enter AirPlay PIN</string>
