@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   AriaCast talks plain HTTP/RTSP to whatever local speaker/receiver a user casts to
+   (AirPlay, DLNA, Google Cast, RAOP, AriaCast-native), discovered at arbitrary IPs on
+   the LAN via mDNS/SSDP/UDP broadcast - there's no fixed domain list for that, and
+   Android's network security config can't express "cleartext OK only on private IP
+   ranges", so cleartext stays allowed by default here for that to keep working.
+   The two internet hosts the app itself talks to (UpdateManager, PluginManager's
+   GitHub sync) are already HTTPS-only in code; they're pinned to remain so here too,
+   as a concrete guardrail against that ever silently regressing to cleartext.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">api.github.com</domain>
+        <domain includeSubdomains="false">raw.githubusercontent.com</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

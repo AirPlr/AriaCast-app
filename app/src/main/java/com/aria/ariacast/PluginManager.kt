@@ -11,8 +11,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context as RhinoContext
+import org.mozilla.javascript.NativeJavaObject
+import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
+import org.mozilla.javascript.WrapFactory
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -23,12 +27,93 @@ import java.util.concurrent.CountDownLatch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
+data class PluginSyncResult(val success: Boolean, val disabledPluginNames: List<String> = emptyList())
+
+/**
+ * Plugin scripts are untrusted JavaScript that gets the live Activity/Context/Service
+ * handed to them. Two layers keep this from being unrestricted native code execution:
+ *
+ * 1. [PluginClassShutter] denies every class lookup, so `Packages.java.lang.Runtime`,
+ *    `java.lang.ProcessBuilder`, etc. simply don't resolve from script.
+ * 2. [PluginWrapFactory] wraps every Java object handed to a script so that
+ *    reflection-chain entry points (`getClass()`, `getClassLoader()`) are hidden,
+ *    closing the well-known Rhino sandbox bypass where a script reaches an
+ *    unrestricted `ClassLoader` through an object it was legitimately given
+ *    (see https://bugzilla.mozilla.org/show_bug.cgi?id=392825).
+ *
+ * This does not make plugins fully sandboxed - a plugin can still call whatever public
+ * methods the injected activity/context/service/helper objects expose - but it closes
+ * the arbitrary-native-code-execution escape hatch. A narrower, capability-based plugin
+ * API (façade objects instead of raw framework objects) would be needed for a stronger
+ * guarantee.
+ */
+private object PluginClassShutter : ClassShutter {
+    override fun visibleToScripts(fullClassName: String): Boolean = false
+}
+
+private class SandboxedNativeJavaObject(
+    scope: Scriptable,
+    javaObject: Any,
+    staticType: Class<*>?
+) : NativeJavaObject(scope, javaObject, staticType) {
+    override fun get(name: String, start: Scriptable): Any {
+        if (name in BLOCKED_MEMBERS) return Scriptable.NOT_FOUND
+        return super.get(name, start)
+    }
+
+    companion object {
+        private val BLOCKED_MEMBERS = setOf(
+            "getClass", "class",
+            "getClassLoader", "classLoader"
+        )
+    }
+}
+
+private object PluginWrapFactory : WrapFactory() {
+    override fun wrapAsJavaObject(
+        cx: RhinoContext,
+        scope: Scriptable,
+        javaObject: Any?,
+        staticType: Class<*>?
+    ): Scriptable {
+        if (javaObject == null) return super.wrapAsJavaObject(cx, scope, javaObject, staticType)
+        return SandboxedNativeJavaObject(scope, javaObject, staticType)
+    }
+}
+
 class PluginManager(private val context: Context) {
 
     private val sharedPreferences = context.getSharedPreferences("plugins_prefs", Context.MODE_PRIVATE)
     private var activeService: AudioCastService? = null
-    private val runningPluginIds = mutableSetOf<String>()
-    
+    private val runningPluginIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val runningPluginThreads = java.util.concurrent.ConcurrentHashMap<String, Thread>()
+
+    /**
+     * Interrupts every currently-running plugin thread. A plugin's top-level script
+     * usually returns quickly after registering its event callbacks, but one that
+     * blocks (e.g. a synchronous ws.request(), or a polling loop) would otherwise keep
+     * running - and keep the Activity it captured reachable - past this PluginManager
+     * being discarded (e.g. on MainActivity.recreate() or onDestroy()).
+     */
+    fun shutdown() {
+        runningPluginThreads.values.forEach { it.interrupt() }
+        runningPluginThreads.clear()
+        runningPluginIds.clear()
+    }
+
+    /** Enters a Rhino Context and locks it down before any plugin script sees it. */
+    private fun enterSandboxedContext(): RhinoContext {
+        val cx = RhinoContext.enter()
+        cx.optimizationLevel = -1
+        try {
+            cx.setClassShutter(PluginClassShutter)
+        } catch (e: SecurityException) {
+            // Already set on this (reused) Context - fine, it's still sandboxed.
+        }
+        cx.setWrapFactory(PluginWrapFactory)
+        return cx
+    }
+
     fun getPlugins(): List<Plugin> {
         val plugins = mutableListOf<Plugin>()
         val customPathUri = sharedPreferences.getString("plugin_folder_uri", null)
@@ -106,11 +191,10 @@ class PluginManager(private val context: Context) {
         }
 
         val finalScriptContent = scriptContent!!
-        Thread {
-            val rhino = RhinoContext.enter()
-            rhino.optimizationLevel = -1
+        val pluginThread = Thread {
+            val rhino = enterSandboxedContext()
             try {
-                val scope = rhino.initStandardObjects()
+                val scope = rhino.initSafeStandardObjects()
                 ScriptableObject.putProperty(scope, "activity", RhinoContext.javaToJS(activity, scope))
                 ScriptableObject.putProperty(scope, "context", RhinoContext.javaToJS(context, scope))
                 ScriptableObject.putProperty(scope, "service", RhinoContext.javaToJS(initialService, scope))
@@ -121,7 +205,7 @@ class PluginManager(private val context: Context) {
 
                 val uiHelper = object {
                     fun run(f: Runnable) = activity.runOnUiThread {
-                        val cx = RhinoContext.enter()
+                        val cx = enterSandboxedContext()
                         try { cx.optimizationLevel = -1; f.run() } finally { RhinoContext.exit() }
                     }
                     fun clear() = activity.runOnUiThread { 
@@ -157,7 +241,7 @@ class PluginManager(private val context: Context) {
                 val bgHelper = object {
                     fun run(f: Runnable) {
                         Thread {
-                            val cx = RhinoContext.enter()
+                            val cx = enterSandboxedContext()
                             try { cx.optimizationLevel = -1; f.run() } 
                             catch (e: Exception) { Log.e("PluginBG", "Error", e) } 
                             finally { RhinoContext.exit() }
@@ -179,7 +263,7 @@ class PluginManager(private val context: Context) {
                             activity.audioCastServiceFlow.collectLatest { s ->
                                 activeService = s
                                 if (s != null) {
-                                    val cx = RhinoContext.enter()
+                                    val cx = enterSandboxedContext()
                                     try {
                                         cx.optimizationLevel = -1
                                         ScriptableObject.putProperty(scope, "service", RhinoContext.javaToJS(s, scope))
@@ -195,7 +279,7 @@ class PluginManager(private val context: Context) {
                         activity.lifecycleScope.launch(Dispatchers.IO) {
                             activity.audioCastServiceFlow.filterNotNull().collectLatest { s ->
                                 s.state.collectLatest { state ->
-                                    val cx = RhinoContext.enter()
+                                    val cx = enterSandboxedContext()
                                     try {
                                         cx.optimizationLevel = -1
                                         callback.call(cx, scope, scope, arrayOf(state.name))
@@ -210,7 +294,7 @@ class PluginManager(private val context: Context) {
                         activity.lifecycleScope.launch(Dispatchers.IO) {
                             activity.audioCastServiceFlow.filterNotNull().collectLatest { s ->
                                 s.audioBufferFlow.collectLatest { buffer ->
-                                    val cx = RhinoContext.enter()
+                                    val cx = enterSandboxedContext()
                                     try {
                                         cx.optimizationLevel = -1
                                         callback.call(cx, scope, scope, arrayOf(RhinoContext.javaToJS(buffer, scope)))
@@ -223,7 +307,7 @@ class PluginManager(private val context: Context) {
                     fun onConfigRequested(callback: org.mozilla.javascript.Function) {
                         if (!isConfigOnly) return
                         activity.runOnUiThread {
-                            val cx = RhinoContext.enter()
+                            val cx = enterSandboxedContext()
                             try {
                                 cx.optimizationLevel = -1
                                 callback.call(cx, scope, scope, arrayOf())
@@ -309,8 +393,11 @@ class PluginManager(private val context: Context) {
                 Log.e("PluginManager", "Error executing plugin: " + plugin.name, e)
             } finally {
                 RhinoContext.exit()
+                runningPluginThreads.remove(plugin.id)
             }
-        }.start()
+        }
+        runningPluginThreads[plugin.id] = pluginThread
+        pluginThread.start()
     }
 
     private fun getPluginSubContainer(activity: MainActivity, pluginId: String): LinearLayout {
@@ -342,39 +429,71 @@ class PluginManager(private val context: Context) {
         activity.pluginContainer.visibility = if (anyVisible) View.VISIBLE else View.GONE
     }
 
-    suspend fun syncPluginsFromGitHub(): Boolean = withContext(Dispatchers.IO) {
-        val customPathUri = sharedPreferences.getString("plugin_folder_uri", null) ?: return@withContext false
+    /**
+     * A plugin's own consent toggle is only asked once, but syncPluginsFromGitHub()
+     * can silently overwrite an already-enabled plugin's script with new code from
+     * upstream. Without this, that new code would start running the next time the
+     * plugin runs with no further consent - effectively giving the upstream repo
+     * standing remote-code-execution over anyone who has a plugin enabled. So: hash
+     * every enabled plugin's script before syncing, and if the sync changes it,
+     * disable that plugin again so the user has to consciously review and re-enable it.
+     */
+    suspend fun syncPluginsFromGitHub(): PluginSyncResult = withContext(Dispatchers.IO) {
+        val customPathUri = sharedPreferences.getString("plugin_folder_uri", null)
+            ?: return@withContext PluginSyncResult(success = false)
         val rootUri = Uri.parse(customPathUri)
-        val rootDir = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext false
-        
+        val rootDir = DocumentFile.fromTreeUri(context, rootUri)
+            ?: return@withContext PluginSyncResult(success = false)
+
+        val enabledBefore = getPlugins().filter { it.isEnabled }
+        val hashesBefore = enabledBefore.associate { it.id to hashOfScript(rootDir, it.scriptPath) }
+
         try {
             val client = OkHttpClient()
             val request = Request.Builder()
                 .url("https://api.github.com/repos/AriaCast/AriaCast-android-plugins/contents/")
                 .build()
-            
+
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext false
-                val body = response.body?.string() ?: return@withContext false
+                if (!response.isSuccessful) return@withContext PluginSyncResult(success = false)
+                val body = response.body?.string() ?: return@withContext PluginSyncResult(success = false)
                 val jsonArray = JSONArray(body)
-                
+
                 for (i in 0 until jsonArray.length()) {
                     val fileObj = jsonArray.getJSONObject(i)
                     val fileName = fileObj.getString("name")
                     val downloadUrl = fileObj.getString("download_url")
                     val type = fileObj.getString("type")
-                    
+
                     if (type == "file" && (fileName.endsWith(".json") || fileName.endsWith(".js"))) {
                         downloadAndSaveFile(downloadUrl, fileName, rootDir)
                     }
                 }
             }
             sharedPreferences.edit().putLong("plugins_updated_at", System.currentTimeMillis()).apply()
-            return@withContext true
+
+            val disabledNames = mutableListOf<String>()
+            for (plugin in enabledBefore) {
+                val newHash = hashOfScript(rootDir, plugin.scriptPath)
+                if (newHash != hashesBefore[plugin.id]) {
+                    setPluginEnabled(plugin.id, false)
+                    disabledNames.add(plugin.name)
+                }
+            }
+            return@withContext PluginSyncResult(success = true, disabledPluginNames = disabledNames)
         } catch (e: Exception) {
             Log.e("PluginManager", "Failed to sync plugins", e)
-            return@withContext false
+            return@withContext PluginSyncResult(success = false)
         }
+    }
+
+    private fun hashOfScript(dir: DocumentFile, scriptPath: String): String? {
+        val file = dir.findFile(scriptPath) ?: return null
+        val bytes = try {
+            context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+        } catch (e: Exception) { null } ?: return null
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     private fun downloadAndSaveFile(url: String, fileName: String, destDir: DocumentFile) {

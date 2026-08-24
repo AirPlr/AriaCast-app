@@ -13,9 +13,11 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.Menu
@@ -41,6 +43,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -91,6 +94,12 @@ class MainActivity : AppCompatActivity() {
 
     private var currentCardAnimator: ValueAnimator? = null
 
+    // Bound to the current connection's lifetime, not the Activity's - onServiceConnected
+    // fires again on every rebind (e.g. each time the app comes back to the foreground),
+    // and without cancelling the previous one here each rebind piled on another live
+    // collector on the same StateFlow that never got torn down.
+    private var serviceStateJob: Job? = null
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
             val binder = service as AudioCastService.AudioCastBinder
@@ -98,7 +107,8 @@ class MainActivity : AppCompatActivity() {
             audioCastService = s
             _audioCastServiceFlow.value = s
             isBound = true
-            lifecycleScope.launch {
+            serviceStateJob?.cancel()
+            serviceStateJob = lifecycleScope.launch {
                 s.state.collectLatest { state ->
                     updateUi(state)
                     updateSyncUi()
@@ -111,6 +121,8 @@ class MainActivity : AppCompatActivity() {
             audioCastService = null
             _audioCastServiceFlow.value = null
             isBound = false
+            serviceStateJob?.cancel()
+            serviceStateJob = null
         }
     }
 
@@ -154,9 +166,25 @@ class MainActivity : AppCompatActivity() {
             ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
         if (recordAudioGranted) {
             startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+        } else if (!shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+            // System won't show the request dialog again (permanently denied, or a device
+            // policy) - re-requesting from here on is a silent no-op, so the only way
+            // back in is the app's own Settings page.
+            showOpenSettingsForPermissionDialog()
         } else {
             Toast.makeText(this, getString(R.string.record_audio_permission_required), Toast.LENGTH_LONG).show()
         }
+    }
+
+    private fun showOpenSettingsForPermissionDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.record_audio_permission_required))
+            .setMessage(getString(R.string.record_audio_permission_permanently_denied))
+            .setPositiveButton(getString(R.string.settings)) { _, _ ->
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
     }
 
     private fun beginCast() {
@@ -544,10 +572,19 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         if (isBound) {
+            // unbindService() does NOT trigger onServiceDisconnected, so that callback
+            // can't be relied on alone to cancel serviceStateJob here.
             unbindService(connection)
             isBound = false
+            serviceStateJob?.cancel()
+            serviceStateJob = null
         }
         discoveryManager.stopDiscovery()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        pluginManager.shutdown()
     }
     
     override fun onResume() {
@@ -561,6 +598,7 @@ class MainActivity : AppCompatActivity() {
         val currentPluginsUpdate = pluginPrefs.getLong("plugins_updated_at", 0)
 
         if (newAccent != currentAccentColor || newThemeMode != currentThemeMode || currentPluginsUpdate != lastPluginsUpdateTime) {
+            pluginManager.shutdown()
             recreate()
             return
         }

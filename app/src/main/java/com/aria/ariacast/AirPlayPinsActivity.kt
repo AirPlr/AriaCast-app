@@ -47,7 +47,7 @@ class AirPlayPinsActivity : AppCompatActivity() {
     }
 
     private fun loadPins() {
-        val sharedPreferences = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
+        val sharedPreferences = getSharedPreferences(AudioCastService.SECURE_PREFS_NAME, Context.MODE_PRIVATE)
         val allPrefs = sharedPreferences.all
         val pins = allPrefs.filterKeys { it.startsWith("airplay2_pin_") }
             .map { (key, value) ->
@@ -83,7 +83,7 @@ class AirPlayPinsActivity : AppCompatActivity() {
             .setPositiveButton(R.string.save) { _, _ ->
                 val newPin = input.text.toString()
                 if (newPin.isNotEmpty()) {
-                    val sharedPreferences = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
+                    val sharedPreferences = getSharedPreferences(AudioCastService.SECURE_PREFS_NAME, Context.MODE_PRIVATE)
                     sharedPreferences.edit().putString("airplay2_pin_$host", newPin).apply()
                     loadPins()
                 }
@@ -97,7 +97,7 @@ class AirPlayPinsActivity : AppCompatActivity() {
             .setTitle(getString(R.string.delete_pin))
             .setMessage(host)
             .setPositiveButton(R.string.delete_pin) { _, _ ->
-                val sharedPreferences = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
+                val sharedPreferences = getSharedPreferences(AudioCastService.SECURE_PREFS_NAME, Context.MODE_PRIVATE)
                 sharedPreferences.edit().remove("airplay2_pin_$host").apply()
                 loadPins()
             }

@@ -18,6 +18,7 @@
     <!-- Main Activity -->
     <string name="media_projection_denied">MediaProjection permission denied.</string>
     <string name="record_audio_permission_required">Microphone permission is required to capture and cast audio.</string>
+    <string name="record_audio_permission_permanently_denied">AriaCast needs microphone access to capture and cast audio, but it\'s been denied. Open Settings to grant it.</string>
     <string name="notification_access_required_title">Notification Access Required</string>
     <string name="notification_access_required_message">This isn\'t just for showing track info: some receivers (like the Music Assistant AriaCast Receiver) only start playback once AriaCast tells them playback has started, and that signal is sent through Notification Access. Without it, casting can look connected and audio can be sent, but nothing will actually play.\n\nIf Android shows \"This setting is currently unavailable\" or \"Restricted setting\", go to Settings → Apps → AriaCast, tap the ⋮ menu in the top right, and choose \"Allow restricted settings\" — this is required for apps installed outside the Play Store. Then try enabling it again.</string>
     <string name="open_notification_settings">Open Settings</string>
@@ -117,8 +118,10 @@
     <string name="syncing_plugins">Syncing plugins from GitHub…</string>
     <string name="plugins_synced">Plugins updated</string>
     <string name="sync_failed">Failed to sync plugins</string>
+    <string name="plugins_updated_disabled_title">Updated plugins turned off</string>
+    <string name="plugins_updated_disabled_message">%1$s changed since you enabled them, so they\'ve been turned off. Review what changed before re-enabling.</string>
     <string name="plugin_consent_title">Third-party Plugins</string>
-    <string name="plugin_consent_message">Plugins can execute custom scripts to interact with media and servers. Only install plugins from trusted sources.\n\nDo you want to enable the plugin system?</string>
+    <string name="plugin_consent_message">Plugins are full app extensions, not sandboxed widgets: an enabled plugin can read what\'s playing (including raw audio), control casting, and reach the network. Only enable plugins from sources you trust as much as the app itself.\n\nDo you want to enable the plugin system?</string>
     <string name="accept">Accept</string>
     <string name="decline">Decline</string>
 

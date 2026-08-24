@@ -50,6 +50,31 @@ class SRP6aClientTest {
     }
 
     @Test
+    fun `processM2 rejects a degenerate B that is 0 mod N (RFC 5054 3-1)`() {
+        val srp = SRP6aClient("3939")
+        srp.buildM1()
+        val fakeM2 = TlvUtil.build(
+            TlvUtil.TLV_STATE to byteArrayOf(2),
+            TlvUtil.TLV_SALT to ByteArray(16) { it.toByte() },
+            TlvUtil.TLV_PUBLIC_KEY to ByteArray(384) // all-zero => B == 0 => B mod N == 0
+        )
+        assertNull(srp.processM2(fakeM2))
+    }
+
+    @Test
+    fun `processM2 rejects B equal to N (still 0 mod N)`() {
+        val srp = SRP6aClient("3939")
+        srp.buildM1()
+        val nBytes = SRP6aClient.N.toByteArray().let { if (it[0] == 0.toByte()) it.copyOfRange(1, it.size) else it }
+        val fakeM2 = TlvUtil.build(
+            TlvUtil.TLV_STATE to byteArrayOf(2),
+            TlvUtil.TLV_SALT to ByteArray(16) { it.toByte() },
+            TlvUtil.TLV_PUBLIC_KEY to nBytes
+        )
+        assertNull(srp.processM2(fakeM2))
+    }
+
+    @Test
     fun `processM2 returns null on empty body`() {
         val srp = SRP6aClient("3939")
         srp.buildM1()

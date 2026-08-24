@@ -58,6 +58,7 @@ import org.json.JSONObject
 import com.aria.ariacast.airplay2.AirPlay2Client
 import com.aria.ariacast.airplay2.NeedsPinException
 import com.aria.ariacast.raop.AudioResampler
+import com.aria.ariacast.raop.RaopCrypto
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -97,20 +98,26 @@ class AudioCastService : Service() {
     private var videoCodec: MediaCodec? = null
     
     private lateinit var sharedPreferences: SharedPreferences
+    private lateinit var securePreferences: SharedPreferences
     private lateinit var audioManager: AudioManager
     private var originalVolume: Int = 0
     
     private val _activeDestinations = MutableStateFlow<List<CastDestination>>(emptyList())
     val activeDestinations: StateFlow<List<CastDestination>> = _activeDestinations.asStateFlow()
     
-    private val controlSessions = mutableMapOf<String, DefaultClientWebSocketSession>()
-    private val raopSockets = mutableMapOf<String, Socket>()
-    private val raopCSeqs = mutableMapOf<String, Int>()
-    private val raopSessions = mutableMapOf<String, String?>()
-    private val airplaySessionIds = mutableMapOf<String, String>()
-    private val ap2Clients = mutableMapOf<String, AirPlay2Client>()
-    private val lastSentMetadata = mutableMapOf<String, String>()
-    private val unsupportedSetProperty = mutableSetOf<String>()
+    // These are all mutated from independent Dispatchers.IO coroutines (one per cast
+    // destination, plus the metadata refresh timer and volume commands running
+    // concurrently), so a plain HashMap/HashSet here is a real ConcurrentModificationException
+    // risk - e.g. hitting Stop while a metadata push is in flight. synchronizedMap/Set
+    // (rather than ConcurrentHashMap) because raopSessions legitimately stores null values.
+    private val controlSessions = java.util.Collections.synchronizedMap(mutableMapOf<String, DefaultClientWebSocketSession>())
+    private val raopSockets = java.util.Collections.synchronizedMap(mutableMapOf<String, Socket>())
+    private val raopCSeqs = java.util.Collections.synchronizedMap(mutableMapOf<String, Int>())
+    private val raopSessions = java.util.Collections.synchronizedMap(mutableMapOf<String, String?>())
+    private val airplaySessionIds = java.util.Collections.synchronizedMap(mutableMapOf<String, String>())
+    private val ap2Clients = java.util.Collections.synchronizedMap(mutableMapOf<String, AirPlay2Client>())
+    private val lastSentMetadata = java.util.Collections.synchronizedMap(mutableMapOf<String, String>())
+    private val unsupportedSetProperty = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     
     private val dacpId by lazy { 
         sharedPreferences.getString("dacp_id", null) ?: run {
@@ -220,6 +227,7 @@ class AudioCastService : Service() {
         super.onCreate()
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         sharedPreferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        securePreferences = getSharedPreferences(SECURE_PREFS_NAME, MODE_PRIVATE)
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         
         startMetadataWorker()
@@ -259,6 +267,7 @@ class AudioCastService : Service() {
                     val clientSocket = try { serverSocket.accept() } catch (e: Exception) { null } ?: continue
                     launch {
                         try {
+                            clientSocket.soTimeout = 10000
                             val request = clientSocket.getInputStream().bufferedReader().readLine()
                             Log.d(TAG, "Artwork request: $request")
                             val output = clientSocket.getOutputStream()
@@ -933,14 +942,14 @@ class AudioCastService : Service() {
 
             val extra = dest.extra ?: ""
             // TXT pk is a 64-char hex string representing the 32-byte Ed25519 public key
-            val pkHex = extra.split(";").find { it.startsWith("pk=") }?.substringAfter("=")
+            val pkHex = ExtraFields.get(extra, "pk")
             val txtPk = if (pkHex?.length == 64) {
                 try { ByteArray(32) { i -> pkHex.substring(i * 2, i * 2 + 2).toInt(16).toByte() } }
                 catch (e: Exception) { null }
             } else null
 
             // Load any PIN previously saved for this device
-            var pin: String? = sharedPreferences.getString("airplay2_pin_${dest.host}", null)
+            var pin: String? = securePreferences.getString("airplay2_pin_${dest.host}", null)
             var clearPinOnFailure = pin != null  // stale saved pin should be wiped if connect() fails
 
             while (true) {
@@ -985,7 +994,7 @@ class AudioCastService : Service() {
                 if (!connected) {
                     if (clearPinOnFailure) {
                         // Saved PIN was rejected — clear it and retry (NeedsPinException will prompt the user)
-                        sharedPreferences.edit().remove("airplay2_pin_${dest.host}").apply()
+                        securePreferences.edit().remove("airplay2_pin_${dest.host}").apply()
                         pin = null
                         clearPinOnFailure = false
                         ap2Client.close()
@@ -998,7 +1007,7 @@ class AudioCastService : Service() {
 
                 // Persist PIN so the user won't be asked again next time
                 if (pin != null) {
-                    sharedPreferences.edit().putString("airplay2_pin_${dest.host}", pin).apply()
+                    securePreferences.edit().putString("airplay2_pin_${dest.host}", pin).apply()
                 }
 
                 _state.value = CastState.CASTING
@@ -1023,7 +1032,16 @@ class AudioCastService : Service() {
                     }
                 } finally {
                     ap2Clients.remove(dest.host)
-                    ap2Client.close()
+                    // This runs on cancellation too (e.g. the user hit Stop), where an
+                    // ordinary suspend call would immediately throw - NonCancellable lets
+                    // the TEARDOWN request actually reach the receiver instead of the
+                    // connection just being dropped. teardown() is a blocking call, not a
+                    // suspend one, so it isn't preemptible here; it's bounded by the
+                    // client's own socket timeout rather than by a wrapping withTimeout.
+                    withContext(NonCancellable) {
+                        ap2Client.teardown()
+                        ap2Client.close()
+                    }
                 }
                 break
             }
@@ -1043,13 +1061,20 @@ class AudioCastService : Service() {
             
             val socket = Socket()
             try {
-                socket.connect(java.net.InetSocketAddress(dest.host, targetPort), 5000)
+                try {
+                    socket.connect(java.net.InetSocketAddress(dest.host, targetPort), 5000)
+                } catch (e: Exception) {
+                    if (targetPort == 5000 && (dest.port == 7000 || dest.port == 0)) {
+                        socket.connect(java.net.InetSocketAddress(dest.host, 7000), 5000)
+                    } else throw e
+                }
             } catch (e: Exception) {
-                if (targetPort == 5000 && (dest.port == 7000 || dest.port == 0)) {
-                    socket.connect(java.net.InetSocketAddress(dest.host, 7000), 5000)
-                } else throw e
+                // Not registered in raopSockets yet, so cleanupSession/the outer catch below
+                // can't close this for us - close it here or the file descriptor leaks.
+                try { socket.close() } catch (ignored: Exception) {}
+                throw e
             }
-            
+
             socket.soTimeout = 10000
             socket.tcpNoDelay = true
             raopSockets[dest.host] = socket
@@ -1062,7 +1087,32 @@ class AudioCastService : Service() {
             val userAgent = "AirPlay/550.10"
             val sessionGuid = UUID.randomUUID().toString()
             val rtpSessionId = (10000000..99999999).random() // Unique SSRC/Session ID for RTP
-            
+
+            // Some AirPlay 1 receivers (et bit 0 set in their mDNS TXT record - RaopDiscovery
+            // already only surfaces devices where this holds or et=0) refuse to play unless
+            // the stream is RSA/AES-CBC encrypted; most third-party RAOP receivers don't
+            // require it. Only add encryption when the receiver itself asked for it, so
+            // every receiver that already works unencrypted keeps working unchanged. et can
+            // be a bitmask (e.g. RSA + FairPlay together) - check the bit, not exact equality.
+            val encryptionTypeBits = ExtraFields.get(dest.extra, "et")?.toIntOrNull() ?: 0
+            val wantsEncryption = (encryptionTypeBits and 1) != 0
+            var raopCrypto: RaopCrypto? = null
+            val cryptoSdp = if (wantsEncryption) {
+                try {
+                    val aesKey = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+                    val aesIv = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+                    val encryptedKey = RaopCrypto.encryptAesKey(aesKey)
+                    raopCrypto = RaopCrypto().apply { initAes(aesKey, aesIv) }
+                    val keyB64 = android.util.Base64.encodeToString(encryptedKey, android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+                    val ivB64 = android.util.Base64.encodeToString(aesIv, android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+                    "a=rsaaeskey:$keyB64\r\na=aesiv:$ivB64\r\n"
+                } catch (e: Exception) {
+                    Log.w(TAG, "RAOP encryption setup failed for ${dest.host}, falling back to unencrypted: ${e.message}")
+                    raopCrypto = null
+                    ""
+                }
+            } else ""
+
             val sdp = "v=0\r\n" +
                     "o=iTunes $rtpSessionId 0 IN IP4 $myIp\r\n" +
                     "s=iTunes\r\n" +
@@ -1071,8 +1121,9 @@ class AudioCastService : Service() {
                     "m=audio 0 RTP/AVP 96\r\n" +
                     "a=rtpmap:96 L16/44100/2\r\n" +
                     "a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100\r\n" +
+                    cryptoSdp +
                     "a=control:rtp\r\n"
-            
+
             val commonHeaders = mutableMapOf(
                 "User-Agent" to userAgent,
                 "X-Apple-Session-ID" to sessionGuid,
@@ -1217,13 +1268,14 @@ class AudioCastService : Service() {
                         val size = minOf(1408, buffer.size - offset)
                         val chunk = buffer.copyOfRange(offset, offset + size)
 
-                        val bigEndianBuffer = ByteArray(chunk.size)
+                        var bigEndianBuffer = ByteArray(chunk.size)
                         for (i in 0 until chunk.size step 2) {
                             if (i + 1 < chunk.size) {
                                 bigEndianBuffer[i] = chunk[i+1]
                                 bigEndianBuffer[i+1] = chunk[i]
                             }
                         }
+                        raopCrypto?.let { bigEndianBuffer = it.encryptAudio(bigEndianBuffer) }
 
                         val rtpHeader = ByteBuffer.allocate(12).apply {
                             put(0x80.toByte())
@@ -1257,6 +1309,22 @@ class AudioCastService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "RAOP failed for ${dest.host}: ${e.message}")
+            // This catches CancellationException too (e.g. the user hit Stop), where an
+            // ordinary suspend call would immediately throw - NonCancellable lets a TEARDOWN
+            // actually reach the receiver here, in-line, instead of racing the separate
+            // async send in stopRemoteSessions() against this coroutine's own socket close.
+            withContext(NonCancellable) {
+                try {
+                    val socket = raopSockets[dest.host]
+                    val teardownOutput = if (socket != null && !socket.isClosed) socket.getOutputStream() else null
+                    if (teardownOutput != null) {
+                        sendRtspRequest(teardownOutput, "TEARDOWN", dest.host, dest.port, raopCSeqs[dest.host] ?: 1, mapOf(
+                            "Session" to (raopSessions[dest.host] ?: ""),
+                            "User-Agent" to "AirPlay/366.0"
+                        ))
+                    }
+                } catch (teardownError: Exception) {}
+            }
             raopSockets.remove(dest.host)?.close()
             raopSessions.remove(dest.host)
             raopCSeqs.remove(dest.host)
@@ -1453,7 +1521,11 @@ class AudioCastService : Service() {
 
     fun sendVolumeCommand(direction: String) {
         scope.launch {
-            controlSessions.values.forEach { session ->
+            // Snapshot under the map's intrinsic lock (required for safe iteration over a
+            // synchronizedMap/Set view), then iterate the copy so the blocking network
+            // calls below don't hold that lock and stall concurrent map access elsewhere.
+            val controlSessionsSnapshot = synchronized(controlSessions) { controlSessions.values.toList() }
+            controlSessionsSnapshot.forEach { session ->
                 try {
                     val command = JSONObject().apply {
                         put("command", "volume")
@@ -1462,8 +1534,9 @@ class AudioCastService : Service() {
                     session.send(Frame.Text(command))
                 } catch (e: Exception) {}
             }
-            
-            raopSockets.forEach { (host, socket) ->
+
+            val raopSocketsSnapshot = synchronized(raopSockets) { raopSockets.toMap() }
+            raopSocketsSnapshot.forEach { (host, socket) ->
                 try {
                     val output = socket.getOutputStream()
                     val cseq = raopCSeqs[host] ?: 1
@@ -1661,11 +1734,9 @@ class AudioCastService : Service() {
     private fun getDlnaControlUrls(extra: String?): Pair<String?, String?> {
         if (extra == null) return null to null
         if (extra.startsWith("http")) return extra to null
-        
-        val parts = extra.split(";")
-        val av = parts.find { it.startsWith("av_control=") }?.substringAfter("=")
-        val rc = parts.find { it.startsWith("rc_control=") }?.substringAfter("=")
-        return av to rc
+
+        val fields = ExtraFields.parse(extra)
+        return fields["av_control"] to fields["rc_control"]
     }
 
     private fun updateRaopMetadata(host: String, metadata: TrackMetadata) {
@@ -1891,8 +1962,8 @@ class AudioCastService : Service() {
 
     private fun cleanupSession() {
         val destinations = _activeDestinations.value.toList()
-        stopRemoteSessions(destinations)
-        
+        val teardownJobs = stopRemoteSessions(destinations)
+
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0)
         
         try {
@@ -1926,12 +1997,23 @@ class AudioCastService : Service() {
         companionApiHost = null
 
         controlSessions.clear()
-        raopSockets.values.forEach { try { it.close() } catch (e: Exception) {} }
+        // Close the sockets only after giving the TEARDOWN/stop sends launched by
+        // stopRemoteSessions() above a bounded window to actually reach the receiver -
+        // closing them immediately, as before, meant that async send almost always lost
+        // the race and the receiver was left holding the session open until its own
+        // timeout. Capture the raw socket/client references now (before this coroutine
+        // runs) so a fast reconnect that reuses these maps in the meantime isn't affected.
+        val raopSocketsSnapshot = synchronized(raopSockets) { raopSockets.values.toList() }
+        val ap2ClientsSnapshot = synchronized(ap2Clients) { ap2Clients.values.toList() }
         raopSockets.clear()
         raopSessions.clear()
         raopCSeqs.clear()
-        ap2Clients.values.forEach { try { it.close() } catch (e: Exception) {} }
         ap2Clients.clear()
+        scope.launch(Dispatchers.IO) {
+            withTimeoutOrNull(2000) { teardownJobs.joinAll() }
+            raopSocketsSnapshot.forEach { try { it.close() } catch (e: Exception) {} }
+            ap2ClientsSnapshot.forEach { try { it.close() } catch (e: Exception) {} }
+        }
         _activeDestinations.value = emptyList()
         sessionJob?.cancel()
         sessionJob = null
@@ -1939,13 +2021,17 @@ class AudioCastService : Service() {
         _stats.value = CastingStats()
     }
 
-    private fun stopRemoteSessions(destinations: List<CastDestination>) {
-        destinations.forEach { dest ->
+    private fun stopRemoteSessions(destinations: List<CastDestination>): List<Job> {
+        return destinations.map { dest ->
             scope.launch {
                 try {
                     when (dest.platform) {
+                        "AirPlay2" -> {
+                            ap2Clients[dest.host]?.teardown()
+                        }
                         "DLNA" -> {
-                            val controlUrl = dest.extra ?: return@launch
+                            val (controlUrl, _) = getDlnaControlUrls(dest.extra)
+                            if (controlUrl == null) return@launch
                             val stopBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID></u:Stop></s:Body></s:Envelope>"""
                             client.post(controlUrl) {
                                 header("SoapAction", "\"urn:schemas-upnp-org:service:AVTransport:1#Stop\"")
@@ -2040,6 +2126,11 @@ class AudioCastService : Service() {
         const val EXTRA_SERVERS_JSON = "com.aria.ariacast.EXTRA_SERVERS_JSON"
 
         const val PREFS_NAME = "AriaCastPrefs"
+        // AirPlay 2 pairing PINs live in a separate prefs file, excluded from Android
+        // backup/device-transfer (see data_extraction_rules.xml / backup_rules.xml) -
+        // they shouldn't end up in a cloud backup or a new device's transfer alongside
+        // the rest of the app's ordinary settings.
+        const val SECURE_PREFS_NAME = "AriaCastSecurePrefs"
         const val KEY_LAST_SERVER_HOST = "last_server_host"
         const val KEY_LAST_SERVER_PORT = "last_server_port"
         const val KEY_LAST_SERVER_NAME = "last_server_name"
