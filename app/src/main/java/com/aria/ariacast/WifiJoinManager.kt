@@ -1,93 +1,70 @@
 package com.aria.ariacast
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.wifi.WifiNetworkSpecifier
+import android.app.Activity
+import android.content.Intent
+import android.net.wifi.WifiNetworkSuggestion
+import android.provider.Settings
 import android.util.Log
+import java.net.InetSocketAddress
+import java.net.Socket
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * A deep link (ariacast://...?ssid=...&pass=...) can ask the phone to join a specific
  * Wi-Fi network before casting - e.g. an NFC tag that should both switch networks and
- * start casting to a receiver that only lives on that network. The request/callback this
- * needs (ConnectivityManager.requestNetwork) has to stay registered for the whole cast
- * session, not just until the requesting Activity is destroyed, so it's held here at the
- * process level - MainActivity starts the join, AudioCastService releases it in
- * cleanupSession() once casting actually stops.
+ * start casting to a receiver that only lives on that network.
  *
- * NET_CAPABILITY_INTERNET is deliberately not required: the target network (a home LAN,
- * an IoT VLAN) may not have - or may not have validated - internet access, only local
- * reachability to the receiver, which is all this app needs from it.
+ * This goes through Android's own Settings.ACTION_WIFI_ADD_NETWORKS flow instead of
+ * WifiNetworkSpecifier/ConnectivityManager.requestNetwork: the system shows its native
+ * "save this Wi-Fi network?" dialog, and once accepted the network is saved and managed
+ * exactly as if the user had added it by hand in Settings - the app gets no ownership of
+ * it and the platform decides when to associate. That also means there's nothing for
+ * AudioCastService to release when casting stops; the network simply stays saved, like
+ * any other Wi-Fi network on the phone.
  */
 object WifiJoinManager {
     private const val TAG = "WifiJoinManager"
-    private const val JOIN_TIMEOUT_MS = 20000
 
-    private var connectivityManager: ConnectivityManager? = null
-    private var callback: ConnectivityManager.NetworkCallback? = null
-    private var processWasBound = false
-
-    /** Requests [ssid] (with [password], or open if blank), binds the app's traffic to it
-     *  once available, and reports success/failure via [onResult] on the main thread. */
-    fun join(context: Context, ssid: String, password: String, onResult: (Boolean) -> Unit) {
-        release(context)
-
-        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        connectivityManager = cm
-
-        val specifierBuilder = WifiNetworkSpecifier.Builder().setSsid(ssid)
-        if (password.isNotEmpty()) specifierBuilder.setWpa2Passphrase(password)
-
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(specifierBuilder.build())
-            .build()
-
-        var settled = false
-        val nc = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                if (settled) return
-                settled = true
-                processWasBound = cm.bindProcessToNetwork(network)
-                Log.d(TAG, "Joined Wi-Fi \"$ssid\" (process bound=$processWasBound)")
-                onResult(true)
-            }
-
-            override fun onUnavailable() {
-                if (settled) return
-                settled = true
-                Log.w(TAG, "Could not join Wi-Fi \"$ssid\" - denied, wrong password, or out of range")
-                release(context)
-                onResult(false)
-            }
-        }
-        callback = nc
-
-        try {
-            cm.requestNetwork(request, nc, JOIN_TIMEOUT_MS)
-        } catch (e: Exception) {
-            Log.e(TAG, "requestNetwork failed: ${e.message}")
-            connectivityManager = null
-            callback = null
-            onResult(false)
+    /** Builds the Settings.ACTION_WIFI_ADD_NETWORKS intent for [ssid]/[password] (open
+     *  network if [password] is blank). Launch it with an ActivityResultLauncher and pass
+     *  the result to [interpretResult]. */
+    fun buildAddNetworkIntent(ssid: String, password: String): Intent {
+        val builder = WifiNetworkSuggestion.Builder().setSsid(ssid)
+        if (password.isNotEmpty()) builder.setWpa2Passphrase(password)
+        return Intent(Settings.ACTION_WIFI_ADD_NETWORKS).apply {
+            putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(builder.build()))
         }
     }
 
-    /** Releases a previously joined/pending network, if any, restoring the phone's normal
-     *  default network. Safe to call even when nothing was ever joined. */
-    fun release(context: Context) {
-        val cm = connectivityManager ?: return
-        callback?.let {
-            try { cm.unregisterNetworkCallback(it) } catch (e: Exception) {}
+    /** True if the network was saved (or already existed) - i.e. the user didn't dismiss
+     *  the system dialog and the platform accepted the credentials. */
+    fun interpretResult(resultCode: Int, data: Intent?): Boolean {
+        if (resultCode != Activity.RESULT_OK) return false
+        val codes = data?.getIntegerArrayListExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST) ?: return false
+        return codes.any { it == Settings.ADD_WIFI_RESULT_SUCCESS || it == Settings.ADD_WIFI_RESULT_ALREADY_EXISTS }
+    }
+
+    /**
+     * Saving a network doesn't mean the phone is connected to it yet - the platform
+     * associates with it in the background, on its own schedule. Rather than trying to
+     * read back the active SSID (which needs location permission once the app no longer
+     * owns the suggestion - see class doc), this just probes the actual target directly:
+     * that's what the caller needs to know anyway, and it comes back true the moment the
+     * receiver is really reachable, whichever network that ends up being over.
+     */
+    suspend fun waitForReachable(host: String, port: Int, timeoutMs: Long = 15000): Boolean = withContext(Dispatchers.IO) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Socket().use { it.connect(InetSocketAddress(host, port), 1500) }
+                return@withContext true
+            } catch (e: Exception) {
+                Log.d(TAG, "$host:$port not reachable yet: ${e.message}")
+            }
+            delay(500)
         }
-        if (processWasBound) {
-            try { cm.bindProcessToNetwork(null) } catch (e: Exception) {}
-        }
-        connectivityManager = null
-        callback = null
-        processWasBound = false
+        false
     }
 }

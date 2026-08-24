@@ -11,14 +11,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <!-- For WifiNetworkSpecifier (see WifiJoinManager) - joining a specific Wi-Fi network
-         by SSID/password from an ariacast:// deep link. Normal-level, no runtime prompt. -->
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.NFC" />
+    <!-- Not required: NfcWriteActivity checks NfcAdapter.getDefaultAdapter() itself and
+         shows an unavailable state, so the app stays installable on devices without NFC. -->
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
     <application
         android:name=".AriaCastApp"
@@ -80,6 +81,7 @@
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".ProtocolsActivity" android:exported="false" />
         <activity android:name=".AirPlayPinsActivity" android:exported="false" />
+        <activity android:name=".NfcWriteActivity" android:exported="false" />
         <activity android:name=".PacketLogActivity" android:exported="false" />
         <activity android:name=".PluginsActivity" android:exported="false" />
         <activity android:name=".AriaCompanionActivity" android:exported="false" />

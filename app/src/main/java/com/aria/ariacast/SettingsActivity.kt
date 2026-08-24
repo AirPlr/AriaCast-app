@@ -96,6 +96,10 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, AirPlayPinsActivity::class.java))
         }
 
+        findViewById<View>(R.id.writeNfcTagLayout).setOnClickListener {
+            startActivity(Intent(this, NfcWriteActivity::class.java))
+        }
+
         findViewById<View>(R.id.pluginFolderLayout).setOnClickListener {
             showPluginFolderDialog()
         }

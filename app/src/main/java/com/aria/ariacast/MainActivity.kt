@@ -44,6 +44,7 @@ import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -164,6 +165,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var wifiAddNetworkContinuation: CancellableContinuation<Boolean>? = null
+
+    /** Result of the Settings.ACTION_WIFI_ADD_NETWORKS dialog launched from
+     *  [joinDeepLinkWifi] - see WifiJoinManager for why this doesn't try to hold or
+     *  release the network itself. */
+    private val requestAddWifiNetwork = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val saved = WifiJoinManager.interpretResult(result.resultCode, result.data)
+        wifiAddNetworkContinuation?.let { if (it.isActive) it.resume(saved) }
+        wifiAddNetworkContinuation = null
+    }
+
     private val requestCastPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val recordAudioGranted = grants[Manifest.permission.RECORD_AUDIO]
             ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -245,11 +257,13 @@ class MainActivity : AppCompatActivity() {
      * when omitted, matching a bare `ariacast://host` link. Tapping the same link again
      * while already casting to that host stops casting instead of restarting it.
      *
-     * ssid/pass ask the phone to join that Wi-Fi network first - e.g. a tag that should
-     * both switch the phone onto the receiver's network and start casting to it. That has
-     * to happen before anything else here: discovery (mDNS/SSDP) can't find a device on a
-     * network the phone isn't on yet, so a wifi-joining link skips discovery-based
-     * resolution entirely and connects directly using the target's default port.
+     * ssid/pass ask the phone to save and join that Wi-Fi network first via Android's own
+     * "save this network?" dialog (see WifiJoinManager) - e.g. a tag that should both get
+     * the phone onto the receiver's network and start casting to it. That has to happen
+     * before anything else here: discovery (mDNS/SSDP) can't find a device on a network the
+     * phone isn't on yet, so a wifi-joining link skips discovery-based resolution entirely
+     * and connects directly using the target's default port, then waits for that address to
+     * actually become reachable before casting to it.
      */
     private fun handleDeepLink(intent: Intent?) {
         if (intent == null || intent.action != Intent.ACTION_VIEW) return
@@ -282,8 +296,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (!ssid.isNullOrEmpty()) {
-                val joined = joinDeepLinkWifi(ssid, uri.getQueryParameter("pass") ?: "")
-                if (!joined) {
+                val saved = joinDeepLinkWifi(ssid, uri.getQueryParameter("pass") ?: "")
+                if (!saved) {
                     Toast.makeText(this@MainActivity, getString(R.string.deep_link_wifi_failed, ssid), Toast.LENGTH_LONG).show()
                     return@launch
                 }
@@ -292,6 +306,11 @@ class MainActivity : AppCompatActivity() {
             val target = resolveDeepLinkTarget(host, requestedPort, platform, name, skipDiscovery = !ssid.isNullOrEmpty())
             if (target == null) {
                 Toast.makeText(this@MainActivity, getString(R.string.deep_link_not_found, label), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+
+            if (!ssid.isNullOrEmpty() && !WifiJoinManager.waitForReachable(target.host, target.port)) {
+                Toast.makeText(this@MainActivity, getString(R.string.deep_link_wifi_unreachable, ssid), Toast.LENGTH_LONG).show()
                 return@launch
             }
 
@@ -307,13 +326,14 @@ class MainActivity : AppCompatActivity() {
         return audioCastService
     }
 
-    /** Suspends until WifiJoinManager reports the join succeeded or failed. AudioCastService
-     *  releases the network again once casting actually stops (see cleanupSession()). */
+    /** Launches Android's native "save this Wi-Fi network?" dialog and suspends until the
+     *  user responds. See WifiJoinManager for why the app doesn't hold or release this
+     *  network itself once saved. */
     private suspend fun joinDeepLinkWifi(ssid: String, password: String): Boolean =
         suspendCancellableCoroutine { cont ->
-            WifiJoinManager.join(this, ssid, password) { joined ->
-                if (cont.isActive) cont.resume(joined)
-            }
+            wifiAddNetworkContinuation = cont
+            cont.invokeOnCancellation { wifiAddNetworkContinuation = null }
+            requestAddWifiNetwork.launch(WifiJoinManager.buildAddNetworkIntent(ssid, password))
         }
 
     /**

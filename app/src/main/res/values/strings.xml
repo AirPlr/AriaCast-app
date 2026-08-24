@@ -25,6 +25,7 @@
     <string name="select_server_first">Please select a server first.</string>
     <string name="deep_link_invalid">That AriaCast link is missing a device address</string>
     <string name="deep_link_wifi_failed">Couldn\'t join Wi-Fi network %1$s</string>
+    <string name="deep_link_wifi_unreachable">Joined %1$s but couldn\'t reach the device</string>
     <string name="deep_link_not_found">Couldn\'t find %1$s on your network</string>
     <string name="deep_link_casting">Casting to %1$s (%2$s)</string>
     <string name="deep_link_stopping">Stopped casting to %1$s</string>
@@ -193,4 +194,26 @@
     <string name="no_pins_saved">No PINs saved</string>
     <string name="edit_pin">Edit PIN</string>
     <string name="delete_pin">Delete PIN</string>
+    <string name="write_nfc_tag">Write NFC Tag</string>
+    <string name="write_nfc_tag_desc">Create a tag that starts casting to a device when tapped</string>
+
+    <!-- NFC Tag Writer -->
+    <string name="nfc_write_device_section">Device</string>
+    <string name="nfc_write_host_hint">Host or IP address</string>
+    <string name="nfc_write_port_hint">Port (optional)</string>
+    <string name="nfc_write_type_label">Protocol</string>
+    <string name="nfc_write_name_hint">Display name (optional)</string>
+    <string name="nfc_write_wifi_switch">Also join a Wi-Fi network</string>
+    <string name="nfc_write_ssid_hint">Wi-Fi network name (SSID)</string>
+    <string name="nfc_write_pass_hint">Wi-Fi password</string>
+    <string name="nfc_write_status_ready">Fill in a device above, then hold your phone near an NFC tag to write it</string>
+    <string name="nfc_write_status_writing">Writing…</string>
+    <string name="nfc_write_status_success">Tag written — tap it to cast to %1$s</string>
+    <string name="nfc_not_available">This device doesn\'t support NFC</string>
+    <string name="nfc_write_missing_host">Enter a host or IP address first</string>
+    <string name="nfc_write_dlna_wifi_conflict">DLNA links can\'t include Wi-Fi credentials — DLNA needs the phone to already be on the network to discover the device</string>
+    <string name="nfc_write_read_only">This tag is read-only</string>
+    <string name="nfc_write_too_small">This tag is too small to hold this link</string>
+    <string name="nfc_write_unsupported_tag">This tag doesn\'t support writing</string>
+    <string name="nfc_write_failed">Couldn\'t write to the tag — hold it steady and try again</string>
 </resources>
