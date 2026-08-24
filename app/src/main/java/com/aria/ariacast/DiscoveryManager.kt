@@ -247,9 +247,11 @@ class DiscoveryManager(private val context: Context) {
         val prefs = context.getSharedPreferences("AriaCastPrefs", Context.MODE_PRIVATE)
         val services = mutableListOf("_audiocast._tcp")
         val airplayEnabled = prefs.getBoolean("airplay_enabled", false)
-        if (airplayEnabled) {
+        val airplay2Enabled = prefs.getBoolean("airplay2_enabled", false)
+        if (airplay2Enabled) {
             services.add("_airplay._tcp")
-            
+        }
+        if (airplayEnabled) {
             raopDiscovery = RaopDiscovery(context)
             raopDiscovery?.start { device ->
                 val server = Server(

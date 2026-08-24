@@ -108,6 +108,7 @@ class AudioCastService : Service() {
     private val raopCSeqs = mutableMapOf<String, Int>()
     private val raopSessions = mutableMapOf<String, String?>()
     private val airplaySessionIds = mutableMapOf<String, String>()
+    private val ap2Clients = mutableMapOf<String, AirPlay2Client>()
     private val lastSentMetadata = mutableMapOf<String, String>()
     private val unsupportedSetProperty = mutableSetOf<String>()
     
@@ -1003,7 +1004,8 @@ class AudioCastService : Service() {
                 _state.value = CastState.CASTING
                 updateNotification()
 
-                _metadata.value?.let { ap2Client.sendMetadata(it.title, it.artist, it.album) }
+                ap2Clients[dest.host] = ap2Client
+                _metadata.value?.let { ap2Client.sendMetadata(it.title, it.artist, it.album, currentArtworkBytes) }
 
                 val alacFrameBytes = AP2_ALAC_FRAME_SIZE * 2 * 2  // 352 samples * 2 ch * 2 bytes
                 val buf = ByteArrayOutputStream()
@@ -1020,6 +1022,7 @@ class AudioCastService : Service() {
                         }
                     }
                 } finally {
+                    ap2Clients.remove(dest.host)
                     ap2Client.close()
                 }
                 break
@@ -1487,6 +1490,9 @@ class AudioCastService : Service() {
                             // DIAL protocol used for Google Cast here does not support volume control.
                             // This would require implementing the full CastV2 protocol (port 8009).
                         }
+                        "AirPlay2" -> {
+                            ap2Clients[dest.host]?.setVolume(if (direction == "up") -10.0 else -30.0)
+                        }
                     }
                 } catch (e: Exception) {}
             }
@@ -1595,7 +1601,7 @@ class AudioCastService : Service() {
 
         destinations.forEach { dest ->
             try {
-                if (dest.platform != "DLNA" && dest.platform != "Google Cast" && dest.platform != "AirPlay") {
+                if (dest.platform != "DLNA" && dest.platform != "Google Cast" && dest.platform != "AirPlay" && dest.platform != "AirPlay2") {
                     client.post {
                         url {
                             protocol = URLProtocol.HTTP
@@ -1611,6 +1617,17 @@ class AudioCastService : Service() {
                 } else if (dest.platform == "AirPlay") {
                     updateRaopMetadata(dest.host, finalMetadata)
                     if (dest.port != 5000) updateAirPlay2Metadata(dest.host, finalMetadata)
+                } else if (dest.platform == "AirPlay2") {
+                    val ap2 = ap2Clients[dest.host]
+                    if (ap2 != null) {
+                        ap2.sendMetadata(finalMetadata.title, finalMetadata.artist, finalMetadata.album, currentArtworkBytes)
+                        val duration = finalMetadata.durationMs
+                        val position = finalMetadata.positionMs
+                        if (duration != null && position != null) {
+                            ap2.sendProgress(position, duration)
+                        }
+                        PacketLogger.log(PacketDirection.OUT, PacketType.METADATA, "Metadata sent to ${dest.name} (AirPlay 2)")
+                    }
                 } else if (dest.platform == "DLNA") {
                     if (lastSentMetadata[dest.host] != metadataKey) {
                         updateDlnaMetadata(dest, finalMetadata)
@@ -1913,6 +1930,8 @@ class AudioCastService : Service() {
         raopSockets.clear()
         raopSessions.clear()
         raopCSeqs.clear()
+        ap2Clients.values.forEach { try { it.close() } catch (e: Exception) {} }
+        ap2Clients.clear()
         _activeDestinations.value = emptyList()
         sessionJob?.cancel()
         sessionJob = null
