@@ -529,13 +529,17 @@ class MainActivity : AppCompatActivity() {
                 val lastHost = sharedPreferences.getString(AudioCastService.KEY_LAST_SERVER_HOST, null)
                 
                 if (isUserSelecting && selectedServers.size == 1) {
-                    val found = displayedServers.find { it.host == selectedServers[0].host }
+                    val sel = selectedServers[0]
+                    val found = displayedServers.find { it.host == sel.host && it.platform == sel.platform }
+                        ?: displayedServers.find { it.host == sel.host }
                     if (found != null) {
                         selectedServers = listOf(found)
                         serverListAdapter.setSelectedItem(displayedServers.indexOf(found))
                     }
                 } else if (lastHost != null && selectedServers.isEmpty()) {
-                    val lastServer = displayedServers.find { it.host == lastHost }
+                    val lastPlatform = sharedPreferences.getString(AudioCastService.KEY_LAST_SERVER_PLATFORM, null)
+                    val lastServer = displayedServers.find { it.host == lastHost && (lastPlatform == null || it.platform == lastPlatform) }
+                        ?: displayedServers.find { it.host == lastHost }
                     if (lastServer != null) {
                         selectedServers = listOf(lastServer)
                         serverListAdapter.setSelectedItem(displayedServers.indexOf(lastServer))

@@ -64,11 +64,17 @@ class DiscoveryManager(private val context: Context) {
 
         override fun onServiceLost(serviceInfo: NsdServiceInfo) {
             Log.d(TAG, "Service lost: ${serviceInfo.serviceName}")
-            val nameToRemove = if (serviceInfo.serviceType.contains("_raop") && serviceInfo.serviceName.contains("@")) {
+            val baseName = if (serviceInfo.serviceType.contains("_raop") && serviceInfo.serviceName.contains("@")) {
                 serviceInfo.serviceName.substringAfter("@")
             } else {
                 serviceInfo.serviceName
             }
+            val platform = when {
+                serviceInfo.serviceType.contains("_raop") -> "AirPlay"
+                serviceInfo.serviceType.contains("_airplay") -> "AirPlay2"
+                else -> null
+            }
+            val nameToRemove = if (platform != null) "$baseName::$platform" else baseName
             synchronized(discoveredServers) {
                 discoveredServers.remove(nameToRemove)
                 _servers.value = discoveredServers.values.toList()
@@ -206,7 +212,8 @@ class DiscoveryManager(private val context: Context) {
             // the display name so both stay visible rather than one clobbering the other.
             val existingSameName = discoveredServers[name]
             val spoofedName = existingSameName != null && existingSameName.host != hostAddress
-            val key = if (spoofedName) "$name@$hostAddress" else name
+            val baseKey = if (spoofedName) "$name@$hostAddress" else name
+            val key = if (platform == "AirPlay" || platform == "AirPlay2") "$baseKey::$platform" else baseKey
             val candidate = if (spoofedName) server.copy(name = "$name ($hostAddress)") else server
 
             val existing = discoveredServers[key]
