@@ -167,14 +167,14 @@ object BinaryPlist {
         "deviceID" to "00:00:00:00:00:00",
         "sessionUUID" to uuid.toString().uppercase(),
         "timingPort" to 0L,
-        "timingProtocol" to "NTP"
+        "timingProtocol" to "PTP"
     ))
 
     fun makeSessionPlist(uuid: UUID, deviceId: String, timingPort: Int): ByteArray = encode(mapOf(
         "deviceID" to deviceId,
         "sessionUUID" to uuid.toString().uppercase(),
         "timingPort" to timingPort.toLong(),
-        "timingProtocol" to "NTP"
+        "timingProtocol" to "PTP"
     ))
 
     fun decode(data: ByteArray): Map<String, Any?> {
