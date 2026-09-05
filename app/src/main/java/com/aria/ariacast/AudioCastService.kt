@@ -387,6 +387,7 @@ class AudioCastService : Service() {
             putString(KEY_LAST_SERVER_HOST, receiver.host)
             putInt(KEY_LAST_SERVER_PORT, receiver.port)
             putString(KEY_LAST_SERVER_NAME, receiver.name)
+            putString(KEY_LAST_SERVER_PLATFORM, receiver.platform)
             apply()
         }
 
@@ -554,6 +555,7 @@ class AudioCastService : Service() {
                 putString(KEY_LAST_SERVER_HOST, destinations[0].host)
                 putInt(KEY_LAST_SERVER_PORT, destinations[0].port)
                 putString(KEY_LAST_SERVER_NAME, destinations[0].name)
+                putString(KEY_LAST_SERVER_PLATFORM, destinations[0].platform)
                 apply()
             }
         }
@@ -1055,25 +1057,23 @@ class AudioCastService : Service() {
 
     private suspend fun performRaopHandshake(dest: CastDestination, myIp: String) = withContext(Dispatchers.IO) {
         try {
-            val targetPort = if (dest.port > 0) {
-                if (dest.port == 7000) 5000 else dest.port
-            } else 5000
-            
-            val socket = Socket()
-            try {
+            val advertisedPort = if (dest.port > 0) dest.port else 5000
+            val portsToTry = if (advertisedPort == 7000) listOf(7000, 5000) else listOf(advertisedPort)
+
+            var socket: Socket? = null
+            for (port in portsToTry) {
                 try {
-                    socket.connect(java.net.InetSocketAddress(dest.host, targetPort), 5000)
+                    val s = Socket()
+                    s.connect(java.net.InetSocketAddress(dest.host, port), 5000)
+                    socket = s
+                    break
                 } catch (e: Exception) {
-                    if (targetPort == 5000 && (dest.port == 7000 || dest.port == 0)) {
-                        socket.connect(java.net.InetSocketAddress(dest.host, 7000), 5000)
-                    } else throw e
+                    if (port == portsToTry.last()) throw e
+                    Log.d(TAG, "RAOP connect to ${dest.host}:$port failed, trying next port")
                 }
-            } catch (e: Exception) {
-                // Not registered in raopSockets yet, so cleanupSession/the outer catch below
-                // can't close this for us - close it here or the file descriptor leaks.
-                try { socket.close() } catch (ignored: Exception) {}
-                throw e
             }
+            socket!!
+            val targetPort = socket.port
 
             socket.soTimeout = 10000
             socket.tcpNoDelay = true
@@ -2134,6 +2134,7 @@ class AudioCastService : Service() {
         const val KEY_LAST_SERVER_HOST = "last_server_host"
         const val KEY_LAST_SERVER_PORT = "last_server_port"
         const val KEY_LAST_SERVER_NAME = "last_server_name"
+        const val KEY_LAST_SERVER_PLATFORM = "last_server_platform"
 
         const val SAMPLE_RATE = 48000
         const val FRAME_SIZE = 3840
