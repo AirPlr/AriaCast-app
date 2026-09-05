@@ -609,14 +609,18 @@ class AudioCastService : Service() {
                 attempt++
 
                 try {
-                    val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+                    // AirPlay 1 (RAOP) requires 44100 Hz — shairport-sync ignores SDP sample rate.
+                    // Android's AudioFlinger resamples internally when the capture rate
+                    // differs from the source, so this is transparent and correct.
+                    val captureRate = if (destinations.any { it.platform == "AirPlay" }) 44100 else SAMPLE_RATE
+                    val minBufSize = AudioRecord.getMinBufferSize(captureRate, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
                     val bufferSize = (FRAME_SIZE * 4).coerceAtLeast(minBufSize)
 
                     val recorder = AudioRecord.Builder()
                         .setAudioFormat(
                             AudioFormat.Builder()
                                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setSampleRate(SAMPLE_RATE)
+                                .setSampleRate(captureRate)
                                 .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
                                 .build()
                         )
@@ -1126,8 +1130,8 @@ class AudioCastService : Service() {
                     "c=IN IP4 ${dest.host}\r\n" +
                     "t=0 0\r\n" +
                     "m=audio 0 RTP/AVP 96\r\n" +
-                    "a=rtpmap:96 L16/48000/2\r\n" +
-                    "a=fmtp:96 352 0 16 40 10 14 2 255 0 0 48000\r\n" +
+                    "a=rtpmap:96 L16/44100/2\r\n" +
+                    "a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100\r\n" +
                     cryptoSdp +
                     "a=control:rtp\r\n"
 
@@ -1252,34 +1256,40 @@ class AudioCastService : Service() {
                 }
             }
 
-            // UDP sync thread — send initial sync packet, then let receiver free-run
-            // from NTP timing exchange. Repeated sync packets fight the receiver's
-            // anchor correction and cause packet drops.
+            // UDP sync thread — send periodic sync packets to keep the receiver's
+            // RTP-to-NTP mapping from drifting. AudioPlaybackCapture delivers audio
+            // in bursts, so the audio thread's timestamp can run ahead of wall clock.
+            // Without periodic re-anchoring, drift accumulates and audio stops.
             val syncJob = launch(Dispatchers.IO) {
-                // Wait briefly for the first timing exchange to complete
-                delay(500)
+                // Wait for the first NTP timing exchange to complete
+                delay(3000)
 
-                val nowMs = System.currentTimeMillis()
-                val ntpSec = (nowMs / 1000) + 0x83AA7E80
-                val ntpFrac = ((nowMs % 1000) * 0x100000000L / 1000).toInt()
-                val elapsedMs = nowMs - startTimeMs
-                val rtpNow = startTimestamp + (elapsedMs * 48000 / 1000).toInt()
+                var isFirstSync = true
+                while (isActive) {
+                    val nowMs = System.currentTimeMillis()
+                    val ntpSec = (nowMs / 1000) + 0x83AA7E80
+                    val ntpFrac = ((nowMs % 1000) * 0x100000000L / 1000).toInt()
 
-                val syncPacket = ByteBuffer.allocate(20).apply {
-                    put(0x90.toByte()) // first sync (extension bit set)
-                    put(0xD4.toByte())
-                    putShort(7.toShort())
-                    putInt(rtpNow - LATENCY)
-                    putInt(ntpSec.toInt())
-                    putInt(ntpFrac)
-                    putInt(rtpNow)
-                }.array()
+                    val elapsedMs = nowMs - startTimeMs
+                    val rtpNow = startTimestamp + (elapsedMs * 44100 / 1000).toInt()
 
-                try {
-                    val pkt = DatagramPacket(syncPacket, syncPacket.size, serverAddr, serverControlPort)
-                    controlUdp.send(pkt)
-                } catch (_: Exception) {}
-                // No more sync packets — receiver uses NTP timing exchange for clock correction
+                    val syncPacket = ByteBuffer.allocate(20).apply {
+                        put((if (isFirstSync) 0x90 else 0x80).toByte())
+                        put(0xD4.toByte())
+                        putShort(7.toShort())
+                        putInt(rtpNow - LATENCY)
+                        putInt(ntpSec.toInt())
+                        putInt(ntpFrac)
+                        putInt(rtpNow)
+                    }.array()
+
+                    try {
+                        val pkt = DatagramPacket(syncPacket, syncPacket.size, serverAddr, serverControlPort)
+                        controlUdp.send(pkt)
+                    } catch (e: Exception) { break }
+                    isFirstSync = false
+                    delay(30_000) // re-anchor every 30 seconds
+                }
             }
 
             // Audio send loop — send RTP packets over UDP with ALAC uncompressed framing
@@ -1291,7 +1301,7 @@ class AudioCastService : Service() {
                 val accumulator = ByteArrayOutputStream(FRAME_BYTES * 2)
 
                 audioBufferFlow.collect { rawBuffer ->
-                    val buffer = rawBuffer // skip resampler — capture and SDP both at 48000
+                    val buffer = rawBuffer // captured at 44100 Hz natively, no resampling
                     accumulator.write(buffer)
 
                     val accBytes = accumulator.toByteArray()
