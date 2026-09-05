@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Not required: NfcWriteActivity checks NfcAdapter.getDefaultAdapter() itself and
          shows an unavailable state, so the app stays installable on devices without NFC. -->
     <uses-feature android:name="android.hardware.nfc" android:required="false" />

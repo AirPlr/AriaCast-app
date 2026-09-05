@@ -24,14 +24,27 @@ class AudioResampler(
         val totalTaps = tapsPerPhase * l
         filter = FloatArray(totalTaps)
 
-        val cutoff = 1.0f / m.toFloat()
+        val cutoff = 1.0f / maxOf(l, m).toFloat()
         val center = (totalTaps - 1) / 2.0f
 
         for (i in 0 until totalTaps) {
             val x = i.toFloat() - center
             val sinc = if (x == 0f) 1f else sin(PI.toFloat() * cutoff * x) / (PI.toFloat() * cutoff * x)
             val window = 0.54f - 0.46f * cos(2f * PI.toFloat() * i / (totalTaps - 1))
-            filter[i] = sinc * window * l
+            filter[i] = sinc * window
+        }
+
+        // Normalize each polyphase partition to unity gain
+        for (phase in 0 until l) {
+            var sum = 0f
+            for (i in 0 until tapsPerPhase) {
+                sum += filter[phase + i * l]
+            }
+            if (sum != 0f) {
+                for (i in 0 until tapsPerPhase) {
+                    filter[phase + i * l] /= sum
+                }
+            }
         }
     }
 
