@@ -380,6 +380,7 @@ class AirPlay2Client(
         Log.d(TAG, "SETUP session response: code=${resp.code}, headers=${resp.headers}")
         if (resp.code != 200) { Log.e(TAG, "SETUP session failed: ${resp.code}"); return false }
         sessionId = resp.headers["Session"]?.substringBefore(";")?.trim()
+            ?: sessionUuid.toString().uppercase()
         Log.d(TAG, "SETUP session: sessionId=$sessionId")
         val transport = resp.headers["Transport"] ?: ""
         parseTransportResponse(transport)
@@ -408,10 +409,57 @@ class AirPlay2Client(
             streamConnectionId = sessionUuid.mostSignificantBits
         )
         val resp = sendRtspRequest("SETUP", sessionUrl, "application/x-apple-binary-plist", plist)
+        Log.d(TAG, "SETUP stream response: code=${resp.code}, headers=${resp.headers}, bodySize=${resp.body?.size}")
         if (resp.code != 200) return false
+
+        // AirPlay 2 returns port info in the response body plist, not the Transport header
         val transport = resp.headers["Transport"] ?: ""
         parseTransportResponse(transport)
+
+        resp.body?.let { body ->
+            try {
+                val dict = BinaryPlist.decode(body)
+                Log.d(TAG, "SETUP stream plist keys: ${dict.keys}")
+                // Ports may be top-level or inside a "streams" array
+                val dataPort = (dict["dataPort"] as? Long)?.toInt()
+                    ?: (dict["server_port"] as? Long)?.toInt()
+                val ctrlPort = (dict["controlPort"] as? Long)?.toInt()
+                val evtPort = (dict["eventPort"] as? Long)?.toInt()
+
+                // Also check inside streams array
+                val streams = dict["streams"]
+                if (streams is List<*> && streams.isNotEmpty()) {
+                    val stream = streams[0] as? Map<*, *>
+                    if (stream != null) {
+                        Log.d(TAG, "SETUP stream[0] keys: ${stream.keys}")
+                        val dp = (stream["dataPort"] as? Long)?.toInt()
+                            ?: (stream["server_port"] as? Long)?.toInt()
+                        val cp = (stream["controlPort"] as? Long)?.toInt()
+                        if (dp != null && dp > 0) audioRemotePort = dp
+                        if (cp != null && cp > 0) controlRemotePort = cp
+                    }
+                }
+
+                if (dataPort != null && dataPort > 0) audioRemotePort = dataPort
+                if (ctrlPort != null && ctrlPort > 0) controlRemotePort = ctrlPort
+                if (evtPort != null && evtPort > 0) eventPort = evtPort
+                Log.d(TAG, "SETUP stream parsed: audio=$audioRemotePort ctrl=$controlRemotePort event=$eventPort")
+            } catch (e: Exception) {
+                Log.w(TAG, "SETUP stream plist parse failed: ${e.message}")
+            }
+        }
+
         audioSocket = DatagramSocket(0)
+
+        // When transient pairing skipped pair-verify, cipherKeys is null but the
+        // server expects encrypted audio because we sent shk. Use shk as the
+        // encryption key (the server uses the same shk to decrypt).
+        if (cipherKeys == null) {
+            cipherKeys = AirPlay2Crypto.PairKeysResult(shk, shk, 0L, 0L)
+            supportsEncryption = true
+            Log.d(TAG, "Using stream shared key for audio encryption (transient pairing)")
+        }
+
         return true
     }
 
