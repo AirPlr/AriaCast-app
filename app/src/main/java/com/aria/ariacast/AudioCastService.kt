@@ -64,6 +64,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
@@ -1056,6 +1058,11 @@ class AudioCastService : Service() {
     }
 
     private suspend fun performRaopHandshake(dest: CastDestination, myIp: String) = withContext(Dispatchers.IO) {
+        // UDP sockets for audio, control, and timing
+        val audioUdp = DatagramSocket(0)
+        val controlUdp = DatagramSocket(0)
+        val timingUdp = DatagramSocket(0)
+
         try {
             val advertisedPort = if (dest.port > 0) dest.port else 5000
             val portsToTry = if (advertisedPort == 7000) listOf(7000, 5000) else listOf(advertisedPort)
@@ -1078,7 +1085,7 @@ class AudioCastService : Service() {
             socket.soTimeout = 10000
             socket.tcpNoDelay = true
             raopSockets[dest.host] = socket
-            
+
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
             var cseq = 0
@@ -1086,14 +1093,8 @@ class AudioCastService : Service() {
 
             val userAgent = "AirPlay/550.10"
             val sessionGuid = UUID.randomUUID().toString()
-            val rtpSessionId = (10000000..99999999).random() // Unique SSRC/Session ID for RTP
+            val rtpSessionId = (10000000..99999999).random()
 
-            // Some AirPlay 1 receivers (et bit 0 set in their mDNS TXT record - RaopDiscovery
-            // already only surfaces devices where this holds or et=0) refuse to play unless
-            // the stream is RSA/AES-CBC encrypted; most third-party RAOP receivers don't
-            // require it. Only add encryption when the receiver itself asked for it, so
-            // every receiver that already works unencrypted keeps working unchanged. et can
-            // be a bitmask (e.g. RSA + FairPlay together) - check the bit, not exact equality.
             val encryptionTypeBits = ExtraFields.get(dest.extra, "et")?.toIntOrNull() ?: 0
             val wantsEncryption = (encryptionTypeBits and 1) != 0
             var raopCrypto: RaopCrypto? = null
@@ -1119,8 +1120,8 @@ class AudioCastService : Service() {
                     "c=IN IP4 ${dest.host}\r\n" +
                     "t=0 0\r\n" +
                     "m=audio 0 RTP/AVP 96\r\n" +
-                    "a=rtpmap:96 L16/44100/2\r\n" +
-                    "a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100\r\n" +
+                    "a=rtpmap:96 L16/48000/2\r\n" +
+                    "a=fmtp:96 352 0 16 40 10 14 2 255 0 0 48000\r\n" +
                     cryptoSdp +
                     "a=control:rtp\r\n"
 
@@ -1140,13 +1141,27 @@ class AudioCastService : Service() {
             ), sdp)
             readRtspResponse(input)
 
-            // 2. SETUP
+            // 2. SETUP — advertise our UDP ports
             sendRtspRequest(output, "SETUP", dest.host, targetPort, cseq++, commonHeaders + mapOf(
-                "Transport" to "RTP/AVP/TCP;unicast;interleaved=0-1;mode=record"
+                "Transport" to "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=${controlUdp.localPort};timing_port=${timingUdp.localPort}"
             ))
             val setupResp = readRtspResponse(input)
             val session = setupResp.find { it.startsWith("Session:", true) }?.substringAfter(":")?.substringBefore(";")?.trim()
             raopSessions[dest.host] = session
+
+            // Parse server's UDP ports from SETUP response Transport header
+            var serverAudioPort = 0
+            var serverControlPort = 0
+            var serverTimingPort = 0
+            val transportHeader = setupResp.find { it.startsWith("Transport:", true) }?.substringAfter(":") ?: ""
+            transportHeader.split(";").forEach { part ->
+                when {
+                    part.trim().startsWith("server_port=") -> serverAudioPort = part.substringAfter("=").toIntOrNull() ?: 0
+                    part.trim().startsWith("control_port=") -> serverControlPort = part.substringAfter("=").toIntOrNull() ?: 0
+                    part.trim().startsWith("timing_port=") -> serverTimingPort = part.substringAfter("=").toIntOrNull() ?: 0
+                }
+            }
+            Log.d(TAG, "RAOP SETUP: server audio=$serverAudioPort control=$serverControlPort timing=$serverTimingPort")
 
             // 3. RECORD
             sendRtspRequest(output, "RECORD", dest.host, targetPort, cseq++, commonHeaders + mapOf(
@@ -1155,7 +1170,16 @@ class AudioCastService : Service() {
                 "RTP-Info" to "seq=0;rtptime=$LATENCY"
             ))
             readRtspResponse(input)
-            
+
+            // 4. Set initial volume to 0 dB (full) — AirPlay range is -30 (silent) to 0 (max)
+            val volBody = "volume: 0.000000\r\n"
+            sendRtspRequest(output, "SET_PARAMETER", dest.host, targetPort, cseq++, commonHeaders + mapOf(
+                "Session" to (session ?: ""),
+                "Content-Type" to "text/parameters",
+                "Content-Length" to volBody.length.toString()
+            ), volBody)
+            readRtspResponse(input)
+
             raopCSeqs[dest.host] = cseq
 
             _state.value = CastState.CASTING
@@ -1166,153 +1190,140 @@ class AudioCastService : Service() {
 
             var sequence = 0
             var timestamp = LATENCY
-            
-            // Interleaved receiver loop (Timing replies)
-            val receiverJob = launch {
+            val serverAddr = InetAddress.getByName(dest.host)
+            // Anchor: wall-clock time when timestamp == LATENCY
+            val startTimeMs = System.currentTimeMillis()
+            val startTimestamp = LATENCY
+
+            // UDP timing thread — receives timing requests from server and replies
+            // In Classic AirPlay, the SERVER sends timing requests to the CLIENT
+            val timingJob = launch(Dispatchers.IO) {
                 try {
+                    timingUdp.soTimeout = 5000 // 5s timeout for debugging
+                    val buf = ByteArray(256)
+                    Log.d(TAG, "RAOP timing thread started, listening on port ${timingUdp.localPort}")
                     while (isActive) {
-                        val dollar = input.read()
-                        if (dollar == -1) break
-                        if (dollar == 0x24) { // '$'
-                            val channel = input.read()
-                            val length = (input.read() shl 8) or input.read()
-                            val data = ByteArray(length)
-                            var read = 0
-                            while (read < length) {
-                                val r = input.read(data, read, length - read)
-                                if (r == -1) break
-                                read += r
-                            }
-                            
-                            // Check for Timing request (0x53) on Channel 1 (RTCP)
-                            if (channel == 1 && data.size >= 32) {
-                                val type = data[1].toInt() and 0x7F
-                                if (type == 0x53) {
-                                    // Extract sendtime (T1) from the end of request (offset 24-31)
+                        try {
+                            val pkt = DatagramPacket(buf, buf.size)
+                            timingUdp.receive(pkt)
+                            val data = pkt.data
+                            Log.d(TAG, "RAOP timing: received ${pkt.length} bytes from ${pkt.address}:${pkt.port}, type=0x${String.format("%02X", data[1])}")
+
+                            if (pkt.length >= 32) {
+                                val payloadType = data[1].toInt() and 0x7F
+                                if (payloadType == 0x52) { // Timing request (PT=82)
                                     val reqSendSec = ByteBuffer.wrap(data, 24, 4).int
                                     val reqSendFrac = ByteBuffer.wrap(data, 28, 4).int
-                                    
+
                                     val now = System.currentTimeMillis()
                                     val ntpSec = (now / 1000) + 0x83AA7E80
                                     val ntpFrac = ((now % 1000) * 0x100000000L / 1000).toInt()
-                                    
+
                                     val reply = ByteBuffer.allocate(32).apply {
                                         put(0x80.toByte())
-                                        put(0xD3.toByte()) // Timing reply
+                                        put(0xD3.toByte()) // Timing reply (PT=83 | marker)
                                         putShort(7.toShort())
                                         putInt(0) // padding
-                                        putInt(reqSendSec) // reftime (T1)
+                                        putInt(reqSendSec) // reference time (T1 from request)
                                         putInt(reqSendFrac)
-                                        putInt(ntpSec.toInt()) // recvtime (T2)
+                                        putInt(ntpSec.toInt()) // receive time (T2)
                                         putInt(ntpFrac)
-                                        putInt(ntpSec.toInt()) // sendtime (T3)
+                                        putInt(ntpSec.toInt()) // send time (T3)
                                         putInt(ntpFrac)
                                     }.array()
-                                    
-                                    synchronized(output) {
-                                        output.write(0x24)
-                                        output.write(0x01)
-                                        output.write((reply.size shr 8) and 0xFF)
-                                        output.write(reply.size and 0xFF)
-                                        output.write(reply)
-                                        output.flush()
-                                    }
+
+                                    val replyPkt = DatagramPacket(reply, reply.size, pkt.address, pkt.port)
+                                    timingUdp.send(replyPkt)
+                                    Log.d(TAG, "RAOP timing: sent reply to ${pkt.address}:${pkt.port}")
                                 }
                             }
+                        } catch (e: java.net.SocketTimeoutException) {
+                            Log.d(TAG, "RAOP timing: no packet received in 5s (port ${timingUdp.localPort})")
                         }
                     }
                 } catch (e: Exception) {
-                    Log.d(TAG, "RAOP receiver loop ended: ${e.message}")
+                    if (isActive) Log.d(TAG, "RAOP timing thread ended: ${e.message}")
                 }
             }
 
-            // Sync task
-            val syncJob = launch {
-                var isFirstSync = true
-                while (isActive) {
-                    val now = System.currentTimeMillis()
-                    val ntpSec = (now / 1000) + 0x83AA7E80
-                    val ntpFrac = ((now % 1000) * 0x100000000L / 1000).toInt()
-                    
-                    val syncPacket = ByteBuffer.allocate(20).apply {
-                        put((if (isFirstSync) 0x90 else 0x80).toByte())
-                        put(0xD4.toByte()) // Sync
-                        putShort(7.toShort())
-                        putInt(timestamp - LATENCY) // now_without_latency
-                        putInt(ntpSec.toInt())
-                        putInt(ntpFrac)
-                        putInt(timestamp) // now
-                    }.array()
-                    
-                    try {
-                        synchronized(output) {
-                            output.write(0x24) // '$'
-                            output.write(0x01) // channel 1
-                            output.write((syncPacket.size shr 8) and 0xFF)
-                            output.write(syncPacket.size and 0xFF)
-                            output.write(syncPacket)
-                            output.flush()
-                        }
-                    } catch (e: Exception) { break }
-                    isFirstSync = false
-                    delay(1000)
-                }
+            // UDP sync thread — send initial sync packet, then let receiver free-run
+            // from NTP timing exchange. Repeated sync packets fight the receiver's
+            // anchor correction and cause packet drops.
+            val syncJob = launch(Dispatchers.IO) {
+                // Wait briefly for the first timing exchange to complete
+                delay(500)
+
+                val nowMs = System.currentTimeMillis()
+                val ntpSec = (nowMs / 1000) + 0x83AA7E80
+                val ntpFrac = ((nowMs % 1000) * 0x100000000L / 1000).toInt()
+                val elapsedMs = nowMs - startTimeMs
+                val rtpNow = startTimestamp + (elapsedMs * 48000 / 1000).toInt()
+
+                val syncPacket = ByteBuffer.allocate(20).apply {
+                    put(0x90.toByte()) // first sync (extension bit set)
+                    put(0xD4.toByte())
+                    putShort(7.toShort())
+                    putInt(rtpNow - LATENCY)
+                    putInt(ntpSec.toInt())
+                    putInt(ntpFrac)
+                    putInt(rtpNow)
+                }.array()
+
+                try {
+                    val pkt = DatagramPacket(syncPacket, syncPacket.size, serverAddr, serverControlPort)
+                    controlUdp.send(pkt)
+                } catch (_: Exception) {}
+                // No more sync packets — receiver uses NTP timing exchange for clock correction
             }
 
+            // Audio send loop — send RTP packets over UDP with ALAC uncompressed framing
+            // Accumulate exactly 1408 bytes (352 stereo samples) per ALAC frame
+            val FRAME_BYTES = 1408 // 352 samples × 2 channels × 2 bytes
             try {
                 var isFirstPacket = true
                 val resampler = AudioResampler(channels = 2)
-                audioBufferFlow.collect { rawBuffer ->
-                    val buffer = resampler.resample(rawBuffer)
-                    for (offset in 0 until buffer.size step 1408) {
-                        val size = minOf(1408, buffer.size - offset)
-                        val chunk = buffer.copyOfRange(offset, offset + size)
+                val accumulator = ByteArrayOutputStream(FRAME_BYTES * 2)
 
-                        var bigEndianBuffer = ByteArray(chunk.size)
-                        for (i in 0 until chunk.size step 2) {
-                            if (i + 1 < chunk.size) {
-                                bigEndianBuffer[i] = chunk[i+1]
-                                bigEndianBuffer[i+1] = chunk[i]
-                            }
-                        }
-                        raopCrypto?.let { bigEndianBuffer = it.encryptAudio(bigEndianBuffer) }
+                audioBufferFlow.collect { rawBuffer ->
+                    val buffer = rawBuffer // skip resampler — capture and SDP both at 48000
+                    accumulator.write(buffer)
+
+                    val accBytes = accumulator.toByteArray()
+                    var consumed = 0
+                    while (consumed + FRAME_BYTES <= accBytes.size) {
+                        val chunk = accBytes.copyOfRange(consumed, consumed + FRAME_BYTES)
+                        consumed += FRAME_BYTES
+
+                        var alacFrame = alacEncodeUncompressedRaop(chunk)
+                        raopCrypto?.let { alacFrame = it.encryptAudio(alacFrame) }
 
                         val rtpHeader = ByteBuffer.allocate(12).apply {
                             put(0x80.toByte())
                             put((if (isFirstPacket) 0xE0 else 0x60).toByte())
                             putShort(sequence++.toShort())
                             putInt(timestamp)
-                            putInt(rtpSessionId) // SSRC MUST match SDP o= line
+                            putInt(rtpSessionId)
                         }
-                        timestamp += chunk.size / 4
+                        timestamp += FRAME_BYTES / 4 // 352 samples
                         isFirstPacket = false
 
-                        val payload = rtpHeader.array() + bigEndianBuffer
-                        
-                        try {
-                            synchronized(output) {
-                                output.write(0x24) // '$'
-                                output.write(0x00) // channel 0
-                                output.write((payload.size shr 8) and 0xFF)
-                                output.write(payload.size and 0xFF)
-                                output.write(payload)
-                                output.flush()
-                            }
-                        } catch (e: Exception) {
-                            throw CancellationException("RAOP stream closed")
-                        }
+                        val payload = rtpHeader.array() + alacFrame
+                        val pkt = DatagramPacket(payload, payload.size, serverAddr, serverAudioPort)
+                        audioUdp.send(pkt)
+                    }
+
+                    // Keep unconsumed remainder for next round
+                    accumulator.reset()
+                    if (consumed < accBytes.size) {
+                        accumulator.write(accBytes, consumed, accBytes.size - consumed)
                     }
                 }
             } finally {
                 syncJob.cancel()
-                receiverJob.cancel()
+                timingJob.cancel()
             }
         } catch (e: Exception) {
             Log.e(TAG, "RAOP failed for ${dest.host}: ${e.message}")
-            // This catches CancellationException too (e.g. the user hit Stop), where an
-            // ordinary suspend call would immediately throw - NonCancellable lets a TEARDOWN
-            // actually reach the receiver here, in-line, instead of racing the separate
-            // async send in stopRemoteSessions() against this coroutine's own socket close.
             withContext(NonCancellable) {
                 try {
                     val socket = raopSockets[dest.host]
@@ -1328,6 +1339,10 @@ class AudioCastService : Service() {
             raopSockets.remove(dest.host)?.close()
             raopSessions.remove(dest.host)
             raopCSeqs.remove(dest.host)
+        } finally {
+            audioUdp.close()
+            controlUdp.close()
+            timingUdp.close()
         }
     }
 
@@ -2157,4 +2172,46 @@ class AudioCastService : Service() {
         private const val ARTWORK_PORT = 8090
         private const val STREAM_PORT = 8091
     }
+    /** Encode little-endian PCM into an ALAC uncompressed frame.
+     *  Writes the 23-bit ALAC header, byte-swaps each stereo sample pair
+     *  to big-endian, and appends the 3-bit end tag. */
+    private fun alacEncodeUncompressedRaop(pcm: ByteArray): ByteArray {
+        val out = ByteArray(3 + pcm.size + 1) // header + samples + trailer padding
+        var p = 0
+        var bpos = 0
+
+        fun writeBits(v: Int, blen: Int) {
+            val lb = 8 - bpos
+            val rb = lb - blen
+            if (rb >= 0) {
+                val bd = (v shl rb) and 0xFF
+                out[p] = if (bpos == 0) bd.toByte() else (out[p].toInt() or bd).toByte()
+                if (rb == 0) { p++; bpos = 0 } else bpos += blen
+            } else {
+                out[p] = (out[p].toInt() or ((v ushr (-rb)) and 0xFF)).toByte()
+                p++
+                out[p] = ((v shl (8 + rb)) and 0xFF).toByte()
+                bpos = -rb
+            }
+        }
+
+        // ALAC uncompressed frame header: 3 bits tag(1) + 4 bits unused + 8 bits unused
+        //                                 + 4 bits unused + 1 bit "has size" + 2 bits unused + 1 bit "not compressed"
+        writeBits(1, 3); writeBits(0, 4); writeBits(0, 8)
+        writeBits(0, 4); writeBits(0, 1); writeBits(0, 2); writeBits(1, 1)
+
+        // Byte-swap little-endian stereo samples to big-endian
+        var i = 0
+        while (i < pcm.size) {
+            writeBits(pcm[i + 1].toInt() and 0xFF, 8)  // L high
+            writeBits(pcm[i + 0].toInt() and 0xFF, 8)  // L low
+            writeBits(pcm[i + 3].toInt() and 0xFF, 8)  // R high
+            writeBits(pcm[i + 2].toInt() and 0xFF, 8)  // R low
+            i += 4
+        }
+        // End tag
+        writeBits(7, 3)
+        return out
+    }
+
 }
