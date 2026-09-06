@@ -180,8 +180,9 @@ class DiscoveryManager(private val context: Context) {
             attrString("ve")?.let { extraParts.add(ExtraFields.encode("ve", it)) }
         } else if (serviceInfo.serviceType.contains("_audiocast")) {
             platform = "AriaCast"
+        } else if (serviceInfo.serviceType.contains("_snapcast")) {
+            platform = "Snapcast"
         }
-
         // Ensure name is never empty
         if (name.trim().isEmpty()) {
             name = originalName
@@ -290,6 +291,9 @@ class DiscoveryManager(private val context: Context) {
         }
         if (prefs.getBoolean("google_cast_enabled", false)) {
             services.add("_googlecast._tcp")
+        }
+        if (prefs.getBoolean("snapcast_enabled", false)) {
+            services.add("_snapcast-ctrl._tcp")
         }
 
         discoveryJob = scope.launch {
