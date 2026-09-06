@@ -694,6 +694,7 @@ class AudioCastService : Service() {
                     "Google Cast" -> launch { startGoogleCastSession(dest) }
                     "AirPlay" -> launch { startAirPlaySession(dest) }
                     "AirPlay2" -> launch { startAirPlay2Session(dest) }
+                    "Snapcast" -> launch { startSnapcastSession(dest) }
                     else -> {
                         launch { startControlSession(dest) }
                         if (videoEnabled && destinations.size == 1) { 
@@ -1064,6 +1065,175 @@ class AudioCastService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "AirPlay 2 session failed for ${dest.name}: ${e.message}")
             _state.value = CastState.ERROR
+        }
+    }
+
+    private suspend fun startSnapcastSession(dest: CastDestination) = withContext(Dispatchers.IO) {
+        var streamId: String? = null
+        var rpcSocket: Socket? = null
+        var audioSocket: Socket? = null
+        var previousGroupStreams: Map<String, String>? = null // groupId → previous streamId
+        var rpcOut: java.io.OutputStream? = null
+        var rpcIn: java.io.BufferedReader? = null
+        var rpcSeq = 0
+
+        fun nextId() = ++rpcSeq
+
+        suspend fun rpcCall(method: String, params: JSONObject? = null): JSONObject {
+            val reqId = nextId()
+            val req = JSONObject().apply {
+                put("id", reqId)
+                put("jsonrpc", "2.0")
+                put("method", method)
+                if (params != null) put("params", params)
+            }.toString() + "\n"
+            rpcOut!!.write(req.toByteArray())
+            rpcOut!!.flush()
+            // Read lines until we get a response matching our request ID
+            // (snapserver sends async notifications on the same socket)
+            while (true) {
+                val line = rpcIn!!.readLine() ?: throw Exception("No response from snapserver")
+                val json = JSONObject(line)
+                // Match by request ID. Snapserver sends:
+                // - responses with "id" matching our request
+                // - error responses sometimes with "id": null
+                // - async notifications with "method" (no "id")
+                val respId = json.opt("id")
+                if (respId is Int && respId == reqId) {
+                    return json
+                }
+                // Accept null-id error responses as ours (they follow our request)
+                if (json.has("error") && (respId == null || respId == JSONObject.NULL)) {
+                    return json
+                }
+                Log.d(TAG, "Snapcast: skipped message: ${line.take(100)}")
+            }
+        }
+
+        try {
+            _state.value = CastState.CONNECTING
+
+            // 1. Connect to Snapcast JSON-RPC control API (discovered via _snapcast-ctrl._tcp)
+            rpcSocket = Socket()
+            rpcSocket.connect(java.net.InetSocketAddress(dest.host, dest.port), 5000)
+            rpcSocket.tcpNoDelay = true
+            rpcOut = rpcSocket.getOutputStream()
+            rpcIn = rpcSocket.getInputStream().bufferedReader()
+
+            // 2. Create a TCP source stream
+            // Request an explicit port (starting at 4953) so the URI includes it.
+            // Retry with incremented port and name suffix on collision.
+            val baseName = android.os.Build.MODEL ?: "Android"
+            var audioPort = 4953
+            var nameAttempt = 0
+            var portAttempt = 0
+
+            while (true) {
+                val name = if (nameAttempt == 0) baseName else "$baseName (${nameAttempt + 1})"
+                val port = audioPort + portAttempt
+
+                val resp = rpcCall("Stream.AddStream", JSONObject().apply {
+                    put("streamUri", "tcp://0.0.0.0:$port?name=$name&sampleformat=48000:16:2&mode=server")
+                })
+
+                if (!resp.has("error")) {
+                    streamId = resp.getJSONObject("result").optString("id", name)
+                    audioPort = port
+                    break
+                }
+
+                val errData = resp.optJSONObject("error")?.optString("data", "") ?: ""
+                if (errData.contains("already exists", ignoreCase = true)) {
+                    nameAttempt++
+                    Log.d(TAG, "Snapcast: name '$name' taken, trying next name")
+                } else if (errData.contains("Address already in use", ignoreCase = true) || errData.contains("bind", ignoreCase = true)) {
+                    portAttempt++
+                    Log.d(TAG, "Snapcast: port $port in use, trying next port")
+                } else {
+                    nameAttempt++
+                    portAttempt++
+                    Log.d(TAG, "Snapcast: '$name' on port $port failed ($errData), trying next")
+                }
+
+                if (nameAttempt >= 5 || portAttempt >= 5) {
+                    throw Exception("Snapcast: failed to create stream: $errData")
+                }
+            }
+
+            Log.d(TAG, "Snapcast stream '$streamId' on port $audioPort")
+
+            // Give snapserver time to bind the TCP source port
+            delay(500)
+
+            // 4. Connect to the TCP audio source port
+            audioSocket = Socket()
+            audioSocket.connect(java.net.InetSocketAddress(dest.host, audioPort), 5000)
+            audioSocket.tcpNoDelay = true
+            val audioOut = audioSocket.getOutputStream()
+
+            _state.value = CastState.CASTING
+            updateNotification()
+            Log.d(TAG, "Snapcast streaming to ${dest.host}:$audioPort (stream: $streamId)")
+
+            // 4. Save current group→stream assignments, then assign all groups to our stream
+            try {
+                val status = rpcCall("Server.GetStatus")
+                val groups = status.getJSONObject("result")
+                    .getJSONObject("server")
+                    .getJSONArray("groups")
+
+                val saved = mutableMapOf<String, String>()
+                for (i in 0 until groups.length()) {
+                    val group = groups.getJSONObject(i)
+                    val groupId = group.getString("id")
+                    saved[groupId] = group.getString("stream_id")
+
+                    rpcCall("Group.SetStream", JSONObject().apply {
+                        put("id", groupId)
+                        put("stream_id", streamId)
+                    })
+                }
+                previousGroupStreams = saved
+                Log.d(TAG, "Snapcast: assigned ${groups.length()} group(s), saved previous assignments")
+            } catch (e: Exception) {
+                Log.w(TAG, "Snapcast: failed to assign groups: ${e.message}")
+            }
+
+            // 5. Stream audio
+            try {
+                audioBufferFlow.collect { buffer ->
+                    audioOut.write(buffer)
+                }
+            } finally {
+                try { audioSocket.close() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Snapcast session failed for ${dest.name}: ${e.message}")
+            _state.value = CastState.ERROR
+        } finally {
+            // 6. Restore previous group assignments and remove our stream
+            if (rpcSocket != null && !rpcSocket.isClosed) {
+                try {
+                    // Restore groups to their previous streams
+                    previousGroupStreams?.forEach { (groupId, prevStreamId) ->
+                        rpcCall("Group.SetStream", JSONObject().apply {
+                            put("id", groupId)
+                            put("stream_id", prevStreamId)
+                        })
+                    }
+                    if (previousGroupStreams != null) {
+                        Log.d(TAG, "Snapcast: restored previous group assignments")
+                    }
+
+                    // Remove our dynamic stream
+                    if (streamId != null) {
+                        rpcCall("Stream.RemoveStream", JSONObject().apply { put("id", streamId) })
+                        Log.d(TAG, "Snapcast stream '$streamId' removed")
+                    }
+                } catch (_: Exception) {}
+            }
+            try { rpcSocket?.close() } catch (_: Exception) {}
+            try { audioSocket?.close() } catch (_: Exception) {}
         }
     }
 

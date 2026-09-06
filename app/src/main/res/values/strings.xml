@@ -109,6 +109,8 @@
     <string name="airplay_protocol_desc">Stream to compatible AirPlay speakers</string>
     <string name="airplay2_protocol">AirPlay 2</string>
     <string name="airplay2_protocol_desc">Stream to Macs, Apple TVs and HomePods</string>
+    <string name="snapcast_protocol">Snapcast</string>
+    <string name="snapcast_protocol_desc">Stream to Snapcast multi-room audio servers</string>
 
     <!-- Plugins Activity -->
     <string name="plugin_folder_updated">Plugin folder updated</string>
