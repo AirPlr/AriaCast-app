@@ -22,6 +22,9 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
+import android.media.VolumeProvider
 import android.media.projection.MediaProjectionManager
 import android.os.Binder
 import android.os.Build
@@ -100,6 +103,7 @@ class AudioCastService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var videoCodec: MediaCodec? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var mediaSession: MediaSession? = null
     
     private lateinit var sharedPreferences: SharedPreferences
     private lateinit var securePreferences: SharedPreferences
@@ -412,6 +416,7 @@ class AudioCastService : Service() {
         }
 
         acquireWakeLock()
+        startVolumeSession()
 
         val companionIp = sharedPreferences.getString(AriaCompanionActivity.KEY_COMPANION_IP, null)
         val companionPort = sharedPreferences.getInt(AriaCompanionActivity.KEY_COMPANION_PORT, COMPANION_API_PORT)
@@ -584,6 +589,10 @@ class AudioCastService : Service() {
         }
 
         acquireWakeLock()
+        // Only intercept volume keys for protocols with remote volume control
+        if (destinations.any { it.platform in listOf("AirPlay", "AirPlay2", "AriaCast", "DLNA") }) {
+            startVolumeSession()
+        }
 
         // MediaProjection token is single-use on Android 14+; obtain it once before any retries.
         val projection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionToken)
@@ -1773,6 +1782,47 @@ class AudioCastService : Service() {
         }
     }
 
+    /** Send an absolute volume in dB to all active receivers.
+     *  AirPlay range: -30.0 (silent) to 0.0 (max). */
+    private fun sendVolumeDb(dB: Double) {
+        Log.d(TAG, "Setting receiver volume to $dB dB")
+        scope.launch {
+            // AirPlay 1 (RAOP)
+            val raopSnapshot = synchronized(raopSockets) { raopSockets.toMap() }
+            raopSnapshot.forEach { (host, socket) ->
+                try {
+                    val output = socket.getOutputStream()
+                    val cseq = raopCSeqs[host] ?: 1
+                    val session = raopSessions[host] ?: ""
+                    val volStr = "volume: ${"%.6f".format(dB)}\r\n"
+                    sendRtspRequest(output, "SET_PARAMETER", host, socket.port, cseq, mapOf(
+                        "Session" to session,
+                        "Content-Type" to "text/parameters",
+                        "Content-Length" to volStr.length.toString()
+                    ), volStr)
+                    raopCSeqs[host] = cseq + 1
+                } catch (_: Exception) {}
+            }
+
+            // AirPlay 2
+            val ap2Snapshot = synchronized(ap2Clients) { ap2Clients.toMap() }
+            ap2Snapshot.forEach { (_, client) ->
+                try { client.setVolume(dB) } catch (_: Exception) {}
+            }
+
+            // AriaCast native
+            val controlSnapshot = synchronized(controlSessions) { controlSessions.values.toList() }
+            controlSnapshot.forEach { session ->
+                try {
+                    session.send(Frame.Text(JSONObject().apply {
+                        put("command", "volume_set")
+                        put("level", ((dB + 30) / 30 * 100).toInt().coerceIn(0, 100))
+                    }.toString()))
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     private suspend fun adjustDlnaVolume(rcUrl: String, direction: String) {
         try {
             val getVolBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetVolume xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1"><InstanceID>0</InstanceID><Channel>Master</Channel></u:GetVolume></s:Body></s:Envelope>"""
@@ -2165,8 +2215,13 @@ class AudioCastService : Service() {
         val destinations = _activeDestinations.value.toList()
         val teardownJobs = stopRemoteSessions(destinations)
         releaseWakeLock()
+        stopVolumeSession()
 
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0)
+        // Restore volume only if the user didn't change it during casting
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (currentVolume == 0) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0)
+        }
         
         try {
             audioRecord?.stop()
@@ -2240,6 +2295,58 @@ class AudioCastService : Service() {
             }
         }
         wakeLock = null
+    }
+
+    /** Start a MediaSession with a remote VolumeProvider so the phone's
+     *  hardware volume buttons control the AirPlay receiver volume. */
+    private fun startVolumeSession() {
+        val session = MediaSession(this, "AriaCast")
+
+        // Claim media button priority so volume keys route to us, not the music app
+        @Suppress("DEPRECATION")
+        session.setFlags(
+            MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or
+            MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+
+        session.setPlaybackState(PlaybackState.Builder()
+            .setState(PlaybackState.STATE_PLAYING, 0, 1f)
+            .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE)
+            .build())
+
+        session.setCallback(object : MediaSession.Callback() {
+            // Empty callback — needed to claim media button routing
+        })
+
+        // AirPlay volume: -30 dB (silent) to 0 dB (max), 30 steps of 1 dB
+        val maxSteps = 30
+        session.setPlaybackToRemote(object : VolumeProvider(
+            VOLUME_CONTROL_ABSOLUTE, maxSteps, maxSteps
+        ) {
+            override fun onSetVolumeTo(volume: Int) {
+                setCurrentVolume(volume)
+                val dB = volume - maxSteps
+                sendVolumeDb(dB.toDouble())
+            }
+
+            override fun onAdjustVolume(direction: Int) {
+                val newVol = (currentVolume + direction).coerceIn(0, maxSteps)
+                setCurrentVolume(newVol)
+                val dB = newVol - maxSteps
+                sendVolumeDb(dB.toDouble())
+            }
+        })
+
+        session.isActive = true
+        mediaSession = session
+        Log.d(TAG, "Volume session started — hardware keys route to receiver")
+    }
+
+    private fun stopVolumeSession() {
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
+        Log.d(TAG, "Volume session stopped")
     }
 
     private fun stopRemoteSessions(destinations: List<CastDestination>): List<Job> {
